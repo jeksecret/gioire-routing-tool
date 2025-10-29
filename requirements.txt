@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+supabase
+ortools
+requests
+python-dotenv
+notion-client
