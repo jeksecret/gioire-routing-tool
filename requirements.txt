@@ -6,3 +6,4 @@ ortools
 requests
 python-dotenv
 notion-client
+playwright
