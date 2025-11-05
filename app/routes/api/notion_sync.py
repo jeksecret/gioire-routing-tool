@@ -14,6 +14,9 @@ class VehicleSyncPayload(BaseModel):
 
 @router.post("/vehicles")
 async def sync_vehicles(payload: VehicleSyncPayload):
+    """
+    Sync notion vehicle data into the database.
+    """
     try:
         result = upsert_vehicle(payload.model_dump())
         return result

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from app.routes.api.notion_sync import router as notion_sync_router
+from app.routes.api.travel_times import router as travel_times_router
 
 load_dotenv()
 
@@ -12,3 +13,4 @@ def read_root():
     return {"message": "API is running"}
 
 app.include_router(notion_sync_router, prefix="/api/sync")
+app.include_router(travel_times_router, prefix="/api/travel-times")
