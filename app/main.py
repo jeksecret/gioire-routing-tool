@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from dotenv import load_dotenv
 from app.routes.api.notion_sync import router as notion_sync_router
 from app.routes.api.travel_times import router as travel_times_router
+from app.routes.api.task_split import router as task_split_router
 
 load_dotenv()
 
@@ -14,3 +15,4 @@ def read_root():
 
 app.include_router(notion_sync_router, prefix="/api/sync")
 app.include_router(travel_times_router, prefix="/api/travel-times")
+app.include_router(task_split_router, prefix="/api/task")
