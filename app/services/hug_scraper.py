@@ -76,6 +76,7 @@ def scrape_table(page):
             if row.locator("div.nameBox").count() == 0:
                 continue
 
+            # --- お迎え希望時間 ---
             time_cell = row.locator("td.greet_time_scheduled")
             target_time = None
             if time_cell.count() > 0:
@@ -83,11 +84,15 @@ def scrape_table(page):
                 if text and text != "9999":
                     target_time = text
 
-            user_name = row.locator("div.nameBox").inner_text().replace("\n", " ").strip()
+            # --- 児童名 ---
+            raw_name = row.locator("div.nameBox").inner_text().replace("\n", " ").strip()
+            user_name = re.sub(r"\s{2,}", " ", raw_name)  # collapse multiple spaces into one
 
+            # --- 施設名 ---
             depot_cell = row.locator("td").nth(2)
             depot_name = depot_cell.inner_text().strip() if depot_cell.count() > 0 else None
 
+            # --- 場所 (handle 欠席 + 送迎なし) ---
             if row.locator("td.absence").count() > 0:
                 place = "欠席"
             else:
@@ -157,8 +162,8 @@ def insert_scraped_data_to_supabase(scraped_rows):
             formatted_rows.append({
                 "pickup_flag": pickup_flag,
                 "user_name": user_name.strip(),
-                "depot_name": depot_name.strip(),
-                "place": place.strip(),
+                "depot_name": depot_name.strip() if depot_name else None,
+                "place": place.strip() if place else None,
                 "target_time": target_dt.isoformat() if target_dt else None,
                 "payload": {"raw_row": row}
             })
