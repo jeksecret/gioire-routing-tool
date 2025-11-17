@@ -13,6 +13,11 @@ def read_root():
     """Root endpoint for API status."""
     return {"message": "API is running"}
 
+@app.get("/status")
+def status_check():
+    """Health check endpoint."""
+    return {"status": "200"}
+
 app.include_router(notion_sync_router, prefix="/api/sync")
 app.include_router(travel_times_router, prefix="/api/travel-times")
 app.include_router(task_split_router, prefix="/api/task")
