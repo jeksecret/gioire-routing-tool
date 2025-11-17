@@ -86,7 +86,9 @@ def scrape_table(page):
 
             # --- 児童名 ---
             raw_name = row.locator("div.nameBox").inner_text().replace("\n", " ").strip()
-            user_name = re.sub(r"\s{2,}", " ", raw_name)  # collapse multiple spaces into one
+
+            # Normalize multiple spaces → one full-width space
+            user_name = re.sub(r"\s+", "　", raw_name)
 
             # --- 施設名 ---
             depot_cell = row.locator("td").nth(2)
