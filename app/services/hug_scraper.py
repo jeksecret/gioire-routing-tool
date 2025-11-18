@@ -13,7 +13,14 @@ USERNAME = os.getenv("HUG_USERNAME")
 PASSWORD = os.getenv("HUG_PASSWORD")
 
 # ==========================================
-# 🔹 Facility List (Based on HTML spec)
+# 🔹 Set scrape date (easy to edit / overrides allowed)
+# ==========================================
+SCRAPE_YEAR = os.getenv("SCRAPE_YEAR", "2025")
+SCRAPE_MONTH = os.getenv("SCRAPE_MONTH", "10")
+SCRAPE_DAY = os.getenv("SCRAPE_DAY", "10")
+
+# ==========================================
+# 🔹 Facility List
 # ==========================================
 FACILITIES = [
     "稲毛",
@@ -28,25 +35,58 @@ FACILITIES = [
 ]
 
 # ==========================================
-# 🔹 Login Function
+# 🔹 Login Function (your updated version)
 # ==========================================
 def login(page):
     page.goto("https://www.hug-gioire.link/hug/wm/", wait_until="networkidle")
+
     page.get_by_role("textbox", name="ログインID").fill(USERNAME)
     page.get_by_role("textbox", name="パスワード").fill(PASSWORD)
     page.get_by_role("button", name="ログインする").click()
 
-    # Try to close popup
-    try:
-        iframe = page.locator("iframe").content_frame
-        expect(iframe.get_by_role("heading", name="HUGからのお知らせ")).to_be_visible(timeout=5000)
-        page.get_by_role("button", name=" 閉じる").click()
-    except Exception:
-        pass
+    # ===== YOUR SIMPLE ANNOUNCEMENT CLOSE =====
+    page.wait_for_timeout(1500)
+    page.get_by_role("button", name=" 閉じる").click()
+    print("Announcement popup closed")
 
     expect(page.get_by_role("link", name=" 今日の送迎")).to_be_visible(timeout=10000)
     print("✅ Successfully logged in!")
 
+# ==========================================
+# 🔹 Date Selection
+# ==========================================
+def select_date(page, year: str, month: str, day: str):
+    print(f"Selecting date: {year}-{month}-{day}")
+
+    # Navigate
+    page.get_by_role("link", name=" 今日の送迎").click()
+    expect(page.locator("h1")).to_contain_text("の送迎管理")
+
+    # Open datepicker
+    page.get_by_role("listitem").filter(has_text="日付").click()
+
+    # Select Year
+    page.locator("#ui-datepicker-div").get_by_role("combobox").first.select_option(year)
+
+    # Select Month
+    page.locator("#ui-datepicker-div").get_by_role("combobox").nth(1).select_option(month)
+
+    # Select Day
+    page.get_by_role("link", name=day).click()
+
+    # Auto-close → safe try
+    try:
+        page.get_by_role("button", name="閉じる").click(timeout=500)
+    except:
+        pass
+
+    expected = f"{year}/{month.zfill(2)}/{day.zfill(2)}"
+    expect(page.get_by_role("textbox")).to_have_value(expected)
+
+    print(f"Date selected → {expected}")
+
+    page.get_by_role("button", name="表示変更").click()
+    print("Filter applied")
 
 # ==========================================
 # 🔹 Scrape ONE Facility
@@ -54,17 +94,13 @@ def login(page):
 def scrape_single_facility(page, facility_name):
     print(f"\n🔎 Scraping facility: {facility_name}")
 
-    # 1. Reset all facilities
     page.get_by_role("link", name="すべて解除").click()
 
-    # 2. Check ONLY the selected facility
     checkbox = page.locator(f'#facility_check input[value="{facility_name}"]')
     checkbox.check()
 
-    # 3. Apply filter
     page.get_by_role("button", name="表示変更").click()
 
-    # 4. Wait tables to refresh
     page.locator("div.pickTableWrap").wait_for(timeout=10000)
     page.locator("div.sendTableWrap").wait_for(timeout=10000)
 
@@ -81,7 +117,7 @@ def scrape_single_facility(page, facility_name):
             if row.locator("div.nameBox").count() == 0:
                 continue
 
-            # --- 時間 ---
+            # Time
             tcell = row.locator("td.greet_time_scheduled")
             time_val = None
             if tcell.count() > 0:
@@ -89,24 +125,21 @@ def scrape_single_facility(page, facility_name):
                 if raw_time and raw_time != "9999":
                     time_val = raw_time
 
-            # --- 名前 ---
+            # Name
             raw_name = row.locator("div.nameBox").inner_text().replace("\n", " ").strip()
-            user_name = re.sub(r"\s+", "　", raw_name)  # Normalize → full-width space
+            user_name = re.sub(r"\s+", "　", raw_name)
 
-            # --- Depot ---
+            # Depot
             depot_cell = row.locator("td").nth(2)
             depot_name = depot_cell.inner_text().strip() if depot_cell.count() > 0 else None
 
-            # --- Place ---
+            # Place
             if row.locator("td.absence").count() > 0:
                 place = "欠席"
             else:
                 place_cell = row.locator("td.place")
-                if place_cell.count() > 0:
-                    ptext = place_cell.inner_text().strip()
-                    place = ptext if ptext else "送迎なし"
-                else:
-                    place = "送迎なし"
+                ptext = place_cell.inner_text().strip() if place_cell.count() > 0 else ""
+                place = ptext if ptext else "送迎なし"
 
             all_rows.append({
                 "facility_name": facility_name,
@@ -117,29 +150,23 @@ def scrape_single_facility(page, facility_name):
                 "pickup_flag": pickup_flag
             })
 
-    # Scrape both pickup + dropoff
     scrape_section("pickTableWrap", "迎え")
     scrape_section("sendTableWrap", "送り")
 
     print(f"✔ {facility_name}: {len(all_rows)} rows scraped")
     return all_rows
 
-
 # ==========================================
-# 🔹 Scrape ALL Facilities
+# 🔹 Scrape ALL facilities
 # ==========================================
-def scrape_all(page):
+def scrape_all(page, year, month, day):
     login(page)
+    select_date(page, year, month, day)
 
-    print("\n🔍 Navigating to 今日の送迎 page...")
-    page.get_by_role("link", name=" 今日の送迎").click()
-    expect(page).to_have_url(re.compile(r"pickup\.php"))
-
-    expect(page.locator("h1")).to_contain_text("の送迎管理")
+    print("\n🔍 Starting facility scraping...")
 
     all_data = []
 
-    # Run per-facility scraping
     for f in FACILITIES:
         rows = scrape_single_facility(page, f)
         all_data.extend(rows)
@@ -147,22 +174,8 @@ def scrape_all(page):
     print(f"\n🎉 TOTAL SCRAPED ROWS = {len(all_data)}\n")
     return all_data
 
-
 # ==========================================
-# 🔹 Clear Previous Data
-# ==========================================
-def clear_previous_data():
-    supabase = get_supabase()
-    print("🧹 Clearing previous staging data...")
-    try:
-        res = supabase.schema("stg").from_("hug_raw_requests").delete().neq("id", 0).execute()
-        print(f"✔ Cleared: {len(res.data or [])} rows")
-    except Exception as e:
-        print("⚠️ Clear failed:", e)
-
-
-# ==========================================
-# 🔹 Insert into Supabase
+# 🔹 Insert Into Supabase (UPDATED DATE FIX)
 # ==========================================
 def insert_scraped_data_to_supabase(rows):
     supabase = get_supabase()
@@ -170,52 +183,53 @@ def insert_scraped_data_to_supabase(rows):
 
     formatted = []
 
+    # Selected date (replaces datetime.now())
+    selected_date = f"{SCRAPE_YEAR}-{SCRAPE_MONTH.zfill(2)}-{SCRAPE_DAY.zfill(2)}"
+
     for row in rows:
-        try:
-            time_raw = row["target_time"]
-            target_dt = None
-            if time_raw:
-                today = datetime.now().strftime("%Y-%m-%d")
-                dt_str = time_raw.replace("：", ":")
-                try:
-                    target_dt = datetime.strptime(f"{today} {dt_str}", "%Y-%m-%d %H:%M")
-                except:
-                    pass
+        time_raw = row["target_time"]
+        target_dt = None
 
-            formatted.append({
-                "pickup_flag": row["pickup_flag"] == "迎え",
-                "facility_name": row["facility_name"],
-                "user_name": row["user_name"],
-                "depot_name": row["depot_name"],
-                "place": row["place"],
-                "target_time": target_dt.isoformat() if target_dt else None,
-                "payload": row
-            })
-        except:
-            continue
+        if time_raw:
+            dt_str = time_raw.replace("：", ":")
+            try:
+                target_dt = datetime.strptime(
+                    f"{selected_date} {dt_str}",
+                    "%Y-%m-%d %H:%M"
+                )
+            except:
+                pass
 
-    if not formatted:
-        print("❌ No valid rows to insert.")
-        return
+        formatted.append({
+            "pickup_flag": row["pickup_flag"] == "迎え",
+            "facility_name": row["facility_name"],
+            "user_name": row["user_name"],
+            "depot_name": row["depot_name"],
+            "place": row["place"],
+            "target_time": target_dt.isoformat() if target_dt else None,
+            "payload": row
+        })
 
-    try:
-        supabase.schema("stg").from_("hug_raw_requests").insert(formatted).execute()
-        print(f"✔ Inserted {len(formatted)} rows into Supabase.\n")
-    except Exception as e:
-        print("❌ Insert failed:", e)
-
+    supabase.schema("stg").from_("hug_raw_requests").insert(formatted).execute()
+    print(f"✔ Inserted {len(formatted)} rows into Supabase.\n")
 
 # ==========================================
 # 🔹 Main Runner
 # ==========================================
 def main():
+    year = SCRAPE_YEAR
+    month = SCRAPE_MONTH
+    day = SCRAPE_DAY
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, slow_mo=150)
         page = browser.new_page()
-        rows = scrape_all(page)
+
+        rows = scrape_all(page, year, month, day)
+
         browser.close()
 
-    clear_previous_data()
+    # No deletion of old data
     insert_scraped_data_to_supabase(rows)
 
 
