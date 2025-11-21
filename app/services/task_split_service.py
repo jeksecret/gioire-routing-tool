@@ -5,7 +5,7 @@ from app.supabase import get_supabase
 logger = logging.getLogger(__name__)
 supabase = get_supabase()
 
-def _parse_time_jst_to_utc(target_time_str: str | None, date_base: datetime) -> datetime | None:
+def parse_time_jst_to_utc(target_time_str: str | None, date_base: datetime) -> datetime | None:
     """Convert target time like '09：30' JST → UTC datetime."""
     if not target_time_str or not str(target_time_str).strip():
         return None
@@ -18,7 +18,7 @@ def _parse_time_jst_to_utc(target_time_str: str | None, date_base: datetime) -> 
         logger.warning(f"Failed to parse target_time '{target_time_str}': {e}")
         return None
 
-def _resolve_node_ids(depot_name: str, place: str):
+def resolve_node_ids(depot_name: str, place: str):
     """Return node IDs for depot_name (kind=depot) and place (kind=place)."""
     depot_node_id, place_node_id = None, None
 
@@ -42,7 +42,7 @@ def _resolve_node_ids(depot_name: str, place: str):
 
     return depot_node_id, place_node_id
 
-def _resolve_fk_ids(depot_name: str, user_name: str):
+def resolve_fk_ids(depot_name: str, user_name: str):
     """Return FK IDs for depot_name and user_name."""
     depot_id, user_id = None, None
 
@@ -56,12 +56,10 @@ def _resolve_fk_ids(depot_name: str, user_name: str):
 
     return depot_id, user_id
 
-def _get_travel_minutes(origin_node_id: int, dest_node_id: int) -> int:
+def get_travel_minutes(origin_node_id: int, dest_node_id: int) -> int:
     """
     Fetch travel time (minutes) from core.travel_times.
     Converts duration (seconds → minutes).
-    
-    (NOTE: we can add a fallback, e.g. return 30, if temporary default behavior is needed.)
     """
     q = (
         supabase.schema("core")
@@ -73,17 +71,17 @@ def _get_travel_minutes(origin_node_id: int, dest_node_id: int) -> int:
     )
 
     if not q.data or len(q.data) == 0:
+        logger.warning(f"[TravelTime] No record found for origin={origin_node_id} → dest={dest_node_id}")
         raise ValueError(f"Missing travel time for {origin_node_id} → {dest_node_id}")
 
     seconds = int(q.data[0]["duration"])
     if seconds <= 0:
+        logger.warning(f"[TravelTime] Invalid duration ({seconds}s) for origin={origin_node_id} → dest={dest_node_id}")
         raise ValueError(f"Invalid travel duration ({seconds}s) for {origin_node_id} → {dest_node_id}")
 
-    # Convert seconds to minutes (rounded down)
-    return max(1, seconds // 60)
-
-    # --- Optional fallback (temporary measure if required) ---
-    # return 30  # Uncomment this line instead of raising if fallback is preferred
+    minutes = max(1, seconds // 60)
+    logger.warning(f"[TravelTime] Matched travel time {origin_node_id} → {dest_node_id}: {seconds}s ≈ {minutes}min")
+    return minutes
 
 def split_and_create_tasks(run_id: int = 1):
     """Split stg.hug_raw_requests into paired PICK/DROP tasks."""
@@ -96,8 +94,9 @@ def split_and_create_tasks(run_id: int = 1):
     base_date = datetime.now(timezone(timedelta(hours=9))) # JST today
 
     for r in rows:
-        raw = r.get("payload", {}).get("raw_row", {})
+        raw = r.get("payload", {})
         if not raw:
+            logger.warning(f"Skipping record {r['id']}: empty payload")
             continue
 
         user_name = raw.get("user_name")
@@ -109,19 +108,19 @@ def split_and_create_tasks(run_id: int = 1):
         # pickup_flag判定
         pickup_flag = True if "迎" in str(pickup_flag_raw) else False
 
-        target_time_utc = _parse_time_jst_to_utc(target_time_str, base_date)
+        target_time_utc = parse_time_jst_to_utc(target_time_str, base_date)
         if not target_time_utc:
             logger.warning(f"Skipping record {r['id']} ({user_name}): invalid target_time {target_time_str}")
             continue
 
-        depot_id, user_id = _resolve_fk_ids(depot_name, user_name)
-        depot_node_id, place_node_id = _resolve_node_ids(depot_name, place)
+        depot_id, user_id = resolve_fk_ids(depot_name, user_name)
+        depot_node_id, place_node_id = resolve_node_ids(depot_name, place)
         if not depot_id or not user_id or not depot_node_id or not place_node_id:
             logger.warning(f"Skipping record {r['id']}: missing depot/user/node mapping.")
             continue
 
         # travel time lookup
-        travel_min = _get_travel_minutes(depot_node_id, place_node_id)
+        travel_min = get_travel_minutes(depot_node_id, place_node_id)
         if not travel_min:
             logger.warning(f"No travel time found between nodes {depot_node_id}→{place_node_id}. Using default 30 min.")
             travel_min = 30
