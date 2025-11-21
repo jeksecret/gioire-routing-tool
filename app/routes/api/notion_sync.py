@@ -55,7 +55,6 @@ async def sync_depots(payload: DepotSyncPayload):
 # ===============================
 class UserSyncPayload(BaseModel):
     user_name: str = Field(..., description="User name  from Notion")
-    reading_name: str | None = Field(None, description="User reading name from Notion")
     depot_relation_id: str | None = Field(None, description="Notion relation ID for related depot")
     active: bool | None = Field(True, description="Active status")
     notion_page_id: str = Field(..., description="Notion page ID")
