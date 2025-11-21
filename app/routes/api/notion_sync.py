@@ -9,7 +9,7 @@ router = APIRouter()
 # ===============================
 class VehicleSyncPayload(BaseModel):
     vehicle_name: str = Field(..., description="Vehicle name from Notion")
-    depot_relation_id: str | None = Field(None, description="Notion relation ID for depot")
+    facility_relation_id: str | None = Field(None, description="Notion relation ID for related depot")
     seats: int | None = Field(None, description="Vehicle seat capacity")
     active: bool | None = Field(True, description="Active status")
     notion_page_id: str = Field(..., description="Notion page ID")
