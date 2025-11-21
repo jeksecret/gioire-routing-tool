@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright, expect
 from app.supabase import get_supabase
 
 # ==========================================
-# 🔹 Load environment variables
+# 1) 🔹 Load environment variables
 # ==========================================
 load_dotenv()
 USERNAME = os.getenv("HUG_USERNAME")
@@ -20,78 +20,35 @@ SCRAPE_FACILITY = "千葉大前"
 
 
 # ==========================================
-# 🔹 Name extraction (NEW CLEAN VERSION)
+# 2) 🔹 Login → then go directly to shuttle page
 # ==========================================
-def extract_clean_name(raw_text: str) -> str:
-    """
-    Extract the actual child name only.
-    Removes:
-    - furigana (hiragana-only lines)
-    - trailing 'さん' / 'くん' / 'ちゃん'
-    - whitespace & fullwidth whitespace
-    """
-    if not raw_text:
-        return ""
-
-    # Split into meaningful lines
-    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
-    last_line = ""
-
-    # The actual name is always the non-hiragana line
-    for line in lines:
-        # Skip pure hiragana (furigana)
-        if re.fullmatch(r"[ぁ-ゖー\s]+", line):
-            continue
-        last_line = line
-
-    # Remove suffixes (さん, くん, ちゃん)
-    last_line = re.sub(r"(さん|くん|ちゃん)\s*$", "", last_line)
-
-    # Remove whitespace
-    last_line = last_line.replace(" ", "").replace("　", "")
-
-    return last_line
-
-
-# ==========================================
-# 🔹 Login
-# ==========================================
-def login(page):
-    page.goto("https://www.hug-gioire.link/hug/wm/", wait_until="networkidle")
+def login_and_open_shuttle_page(page):
+    page.goto("https://www.hug-gioire.link/hug/wm/")
 
     page.get_by_role("textbox", name="ログインID").fill(USERNAME)
     page.get_by_role("textbox", name="パスワード").fill(PASSWORD)
     page.get_by_role("button", name="ログインする").click()
-
-    # # Close announcement
-    # page.wait_for_timeout(1500)
-    # try:
-    #     page.get_by_role("button", name=" 閉じる").click()
-    #     print("Announcement popup closed")
-    # except:
-    #     pass
-
-    # expect(page.get_by_role("link", name=" 今日の送迎")).to_be_visible(timeout=10000)
     print("✅ Logged in")
+
+    # Go to today's pickup/dropoff page
+    today = datetime.today().strftime("%Y-%m-%d")
+    url = f"https://www.hug-gioire.link/hug/wm/pickup.php?mode=detail&f_id=1&date={today}"
+
+    page.goto(url)
+    expect(page.locator("h1")).to_contain_text("の送迎管理")
+    print("✅ Opened today's pickup & drop-off page")
 
 
 # ==========================================
-# 🔹 Select date
+# 3) 🔹 Select date using the UI (optional)
 # ==========================================
 def select_date(page, year, month, day):
     print(f"Selecting date: {year}-{month}-{day}")
 
-    page.get_by_role("link", name=" 今日の送迎").click()
-    expect(page.locator("h1")).to_contain_text("の送迎管理")
-
-    # Open datepicker
     page.get_by_role("listitem").filter(has_text="日付").click()
 
-    # Year
     page.locator("#ui-datepicker-div").get_by_role("combobox").first.select_option(year)
-    # Month
     page.locator("#ui-datepicker-div").get_by_role("combobox").nth(1).select_option(month)
-    # Day
     page.get_by_role("link", name=day).click()
 
     try:
@@ -101,14 +58,14 @@ def select_date(page, year, month, day):
 
     expected = f"{year}/{month.zfill(2)}/{day.zfill(2)}"
     expect(page.get_by_role("textbox")).to_have_value(expected)
-    print("Date selected ✔")
 
+    print("Date selected ✔")
     page.get_by_role("button", name="表示変更").click()
     print("Filter applied")
 
 
 # ==========================================
-# 🔹 Scrape ONE facility (with new name logic)
+# 4) 🔹 Scrape ONE facility
 # ==========================================
 def scrape_single_facility(page, facility_name):
     print(f"\n🔎 Scraping facility: {facility_name}")
@@ -117,12 +74,11 @@ def scrape_single_facility(page, facility_name):
     page.get_by_role("link", name="すべて解除").click()
 
     # Select one
-    checkbox = page.locator(f'#facility_check input[value="{facility_name}"]')
-    checkbox.check()
+    page.locator(f'#facility_check input[value="{facility_name}"]').check()
 
     page.get_by_role("button", name="表示変更").click()
 
-    # Ensure tables load
+    # Wait for tables
     page.locator("div.pickTableWrap").wait_for(timeout=10000)
     page.locator("div.sendTableWrap").wait_for(timeout=10000)
 
@@ -133,30 +89,28 @@ def scrape_single_facility(page, facility_name):
         if wrapper.locator("table").count() == 0:
             return
 
-        rows = wrapper.locator("table tbody tr").all()
+        for row in wrapper.locator("table tbody tr").all():
 
-        for row in rows:
-            # Name box missing → skip
             if row.locator("div.nameBox").count() == 0:
                 continue
 
-            # Time
+            # ----- Time -----
             tcell = row.locator("td.greet_time_scheduled")
             time_val = None
             if tcell.count() > 0:
-                val = tcell.inner_text().strip()
-                if val and val != "9999":
-                    time_val = val
+                raw = tcell.inner_text().strip()
+                if raw and raw != "9999":
+                    time_val = raw
 
-            # Name (NEW CLEAN LOGIC)
+            # ----- Clean Name -----
             raw_name = row.locator("div.nameBox").inner_text().strip()
             user_name = extract_clean_name(raw_name)
 
-            # Depot
+            # ----- Depot / Facility -----
             depot_cell = row.locator("td").nth(2)
             depot_name = depot_cell.inner_text().strip() if depot_cell.count() > 0 else None
 
-            # Place
+            # ----- Place -----
             if row.locator("td.absence").count() > 0:
                 place = "欠席"
             else:
@@ -165,7 +119,6 @@ def scrape_single_facility(page, facility_name):
                 place = ptext if ptext else "送迎なし"
 
             rows_all.append({
-                "facility_name": facility_name,
                 "target_time": time_val,
                 "user_name": user_name,
                 "depot_name": depot_name,
@@ -181,7 +134,7 @@ def scrape_single_facility(page, facility_name):
 
 
 # ==========================================
-# 🔹 Insert to Supabase
+# 5) 🔹 Insert scraped rows into Supabase
 # ==========================================
 def insert_scraped_data_to_supabase(rows):
     supabase = get_supabase()
@@ -196,14 +149,15 @@ def insert_scraped_data_to_supabase(rows):
 
         if time_raw:
             try:
-                dt_str = time_raw.replace("：", ":")
-                target_dt = datetime.strptime(f"{selected_date} {dt_str}", "%Y-%m-%d %H:%M")
+                cleaned = time_raw.replace("：", ":")
+                target_dt = datetime.strptime(
+                    f"{selected_date} {cleaned}", "%Y-%m-%d %H:%M"
+                )
             except:
                 pass
 
         formatted.append({
             "pickup_flag": row["pickup_flag"] == "迎え",
-            "facility_name": row["facility_name"],
             "user_name": row["user_name"],
             "depot_name": row["depot_name"],
             "place": row["place"],
@@ -216,23 +170,46 @@ def insert_scraped_data_to_supabase(rows):
 
 
 # ==========================================
-# 🔹 Main
+# 6) 🔹 Helper: Clean name extraction
+#    (Placed near the bottom for readability)
+# ==========================================
+def extract_clean_name(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+    last_line = ""
+
+    for line in lines:
+        if re.fullmatch(r"[ぁ-ゖー\s]+", line):
+            continue
+        last_line = line
+
+    last_line = re.sub(r"(さん|くん|ちゃん)\s*$", "", last_line)
+    last_line = last_line.replace(" ", "").replace("　", "")
+    return last_line
+
+
+# ==========================================
+# 7) 🔹 Main (always last)
 # ==========================================
 def main():
-    year = SCRAPE_YEAR
-    month = SCRAPE_MONTH
-    day = SCRAPE_DAY
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False, slow_mo=130)
         page = browser.new_page()
 
-        login(page)
-        select_date(page, year, month, day)
+        # Step 1: Login
+        login_and_open_shuttle_page(page)
+
+        # Step 2: Select date (UI override)
+        select_date(page, SCRAPE_YEAR, SCRAPE_MONTH, SCRAPE_DAY)
+
+        # Step 3: Scrape
         rows = scrape_single_facility(page, SCRAPE_FACILITY)
 
         browser.close()
 
+    # Step 4: Save to Supabase
     insert_scraped_data_to_supabase(rows)
 
 
