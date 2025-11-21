@@ -16,7 +16,41 @@ SCRAPE_YEAR = os.getenv("SCRAPE_YEAR", "2025")
 SCRAPE_MONTH = os.getenv("SCRAPE_MONTH", "10")
 SCRAPE_DAY = os.getenv("SCRAPE_DAY", "10")
 
-SCRAPE_FACILITY = "本千葉"
+SCRAPE_FACILITY = "千葉大前"
+
+
+# ==========================================
+# 🔹 Name extraction (NEW CLEAN VERSION)
+# ==========================================
+def extract_clean_name(raw_text: str) -> str:
+    """
+    Extract the actual child name only.
+    Removes:
+    - furigana (hiragana-only lines)
+    - trailing 'さん' / 'くん' / 'ちゃん'
+    - whitespace & fullwidth whitespace
+    """
+    if not raw_text:
+        return ""
+
+    # Split into meaningful lines
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+    last_line = ""
+
+    # The actual name is always the non-hiragana line
+    for line in lines:
+        # Skip pure hiragana (furigana)
+        if re.fullmatch(r"[ぁ-ゖー\s]+", line):
+            continue
+        last_line = line
+
+    # Remove suffixes (さん, くん, ちゃん)
+    last_line = re.sub(r"(さん|くん|ちゃん)\s*$", "", last_line)
+
+    # Remove whitespace
+    last_line = last_line.replace(" ", "").replace("　", "")
+
+    return last_line
 
 
 # ==========================================
@@ -29,15 +63,15 @@ def login(page):
     page.get_by_role("textbox", name="パスワード").fill(PASSWORD)
     page.get_by_role("button", name="ログインする").click()
 
-    # Close announcement
-    page.wait_for_timeout(1500)
-    try:
-        page.get_by_role("button", name=" 閉じる").click()
-        print("Announcement popup closed")
-    except:
-        pass
+    # # Close announcement
+    # page.wait_for_timeout(1500)
+    # try:
+    #     page.get_by_role("button", name=" 閉じる").click()
+    #     print("Announcement popup closed")
+    # except:
+    #     pass
 
-    expect(page.get_by_role("link", name=" 今日の送迎")).to_be_visible(timeout=10000)
+    # expect(page.get_by_role("link", name=" 今日の送迎")).to_be_visible(timeout=10000)
     print("✅ Logged in")
 
 
@@ -74,7 +108,7 @@ def select_date(page, year, month, day):
 
 
 # ==========================================
-# 🔹 Scrape ONE facility
+# 🔹 Scrape ONE facility (with new name logic)
 # ==========================================
 def scrape_single_facility(page, facility_name):
     print(f"\n🔎 Scraping facility: {facility_name}")
@@ -96,7 +130,6 @@ def scrape_single_facility(page, facility_name):
 
     def scrape_section(wrapper_class, pickup_flag):
         wrapper = page.locator(f"div.{wrapper_class}")
-
         if wrapper.locator("table").count() == 0:
             return
 
@@ -115,9 +148,9 @@ def scrape_single_facility(page, facility_name):
                 if val and val != "9999":
                     time_val = val
 
-            # Name (full-width spaces)
-            raw_name = row.locator("div.nameBox").inner_text().replace("\n", " ").strip()
-            user_name = re.sub(r"\s+", "　", raw_name)
+            # Name (NEW CLEAN LOGIC)
+            raw_name = row.locator("div.nameBox").inner_text().strip()
+            user_name = extract_clean_name(raw_name)
 
             # Depot
             depot_cell = row.locator("td").nth(2)
@@ -127,8 +160,8 @@ def scrape_single_facility(page, facility_name):
             if row.locator("td.absence").count() > 0:
                 place = "欠席"
             else:
-                place_cell = row.locator("td.place")
-                ptext = place_cell.inner_text().strip() if place_cell.count() > 0 else ""
+                pcell = row.locator("td.place")
+                ptext = pcell.inner_text().strip() if pcell.count() > 0 else ""
                 place = ptext if ptext else "送迎なし"
 
             rows_all.append({
@@ -164,10 +197,7 @@ def insert_scraped_data_to_supabase(rows):
         if time_raw:
             try:
                 dt_str = time_raw.replace("：", ":")
-                target_dt = datetime.strptime(
-                    f"{selected_date} {dt_str}",
-                    "%Y-%m-%d %H:%M"
-                )
+                target_dt = datetime.strptime(f"{selected_date} {dt_str}", "%Y-%m-%d %H:%M")
             except:
                 pass
 
@@ -197,8 +227,6 @@ def main():
         browser = p.chromium.launch(headless=False, slow_mo=130)
         page = browser.new_page()
 
-        # FLOW:
-        # 1. login → 2. date → 3. scrape one facility
         login(page)
         select_date(page, year, month, day)
         rows = scrape_single_facility(page, SCRAPE_FACILITY)
