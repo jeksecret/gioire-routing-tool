@@ -9,7 +9,7 @@ router = APIRouter()
 # ===============================
 class VehicleSyncPayload(BaseModel):
     vehicle_name: str = Field(..., description="Vehicle name from Notion")
-    depot_relation_id: str | None = Field(None, description="Notion relation ID for depot")
+    facility_relation_id: str | None = Field(None, description="Notion relation ID for related depot")
     seats: int | None = Field(None, description="Vehicle seat capacity")
     active: bool | None = Field(True, description="Active status")
     notion_page_id: str = Field(..., description="Notion page ID")
@@ -33,9 +33,9 @@ async def sync_vehicles(payload: VehicleSyncPayload):
 # ===============================
 class DepotSyncPayload(BaseModel):
     depot_name: str = Field(..., description="Facility/Depot name from Notion")
-    active: bool | None = Field(True, description="Active flag")
+    active: bool | None = Field(True, description="Active status")
     notion_page_id: str = Field(..., description="Notion page ID")
-    notion_last_edited: str | None = Field(None, description="ISO timestamp of last edit")
+    notion_last_edited: str | None = Field(None, description="ISO last edited time")
 
 @router.post("/depots")
 async def sync_depots(payload: DepotSyncPayload):
@@ -54,8 +54,8 @@ async def sync_depots(payload: DepotSyncPayload):
 # USER SYNC
 # ===============================
 class UserSyncPayload(BaseModel):
-    user_name: str = Field(..., description="User name  from Notion")
-    depot_relation_id: str | None = Field(None, description="Notion relation ID for related depot")
+    user_name: str = Field(..., description="User name from Notion")
+    facility_relation_id: str | None = Field(None, description="Notion relation ID for related depot")
     active: bool | None = Field(True, description="Active status")
     notion_page_id: str = Field(..., description="Notion page ID")
     notion_last_edited: str | None = Field(None, description="ISO last edited time")
