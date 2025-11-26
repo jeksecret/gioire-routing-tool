@@ -6,21 +6,30 @@ from app.utils.routes_matrix_helper import build_matrix
 logger = logging.getLogger(__name__)
 supabase = get_supabase()
 
-def build_and_store_matrix(nodes: list[dict],
+def build_and_store_matrix(
+    nodes: list[dict],
     routing_preference: str = "TRAFFIC_AWARE",
-    departure_bucket: int = 0,
-    require_coords: bool = False):
+    departure_bucket: int | None = None,
+    require_coords: bool = False
+):
     """
-    Use Google Routes API to compute travel-time matrix between nodes
+    Compute travel-time matrix between nodes using Google Routes API
     and upsert results into core.travel_times.
+    If departure_bucket is provided, it is used directly (ensures consistency with routing_tasks).
     """
 
-    # Compute departure bucket (rounded down to nearest hour, UTC)
-    now_utc = datetime.now(timezone.utc)
-    departure_bucket = (int(now_utc.timestamp()) // 3600) * 3600
-    logger.info(f"Using departure bucket: {departure_bucket} (UTC hour {now_utc.strftime('%Y-%m-%d %H:00:%S')})")
+    # Determine departure bucket
+    if departure_bucket is None:
+        now_utc = datetime.now(timezone.utc)
+        departure_bucket = (int(now_utc.timestamp()) // 3600) * 3600
+        logger.info(
+            f"[TravelTime] Using current UTC bucket: {departure_bucket} ({now_utc.strftime('%Y-%m-%d %H:00:%S')})"
+        )
+    else:
+        dt_str = datetime.fromtimestamp(departure_bucket, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"[TravelTime] Using provided bucket: {departure_bucket} ({dt_str} UTC)")
 
-    # Prepare payload for build_matrix
+    # Prepare point payloads
     points = []
     for n in nodes:
         points.append({
@@ -30,9 +39,9 @@ def build_and_store_matrix(nodes: list[dict],
             "lng": n.get("longitude"),
         })
 
-    logger.info(f"Building time matrix for {len(points)} nodes via Google Routes API")
+    logger.info(f"[TravelTime] Building matrix for {len(points)} nodes via Google Routes API")
 
-    # Delegate to build_matrix()
+    # Call helper to build full matrix
     matrix_result = build_matrix(
         points,
         departure_time=None,
@@ -44,13 +53,13 @@ def build_and_store_matrix(nodes: list[dict],
     minutes = matrix_result["minutes"]
     meters = matrix_result["meters"]
 
-    # Prepare upsert rows for Supabase
+    # Prepare upsert rows
     rows = []
     for i, origin_id in enumerate(ids):
         for j, dest_id in enumerate(ids):
             if origin_id == dest_id:
                 continue
-
+            
             rows.append({
                 "origin_node_id": origin_id,
                 "dest_node_id": dest_id,
@@ -67,9 +76,10 @@ def build_and_store_matrix(nodes: list[dict],
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
+    # Upsert into core.travel_times
     if rows:
         supabase.schema("core").from_("travel_times").upsert(rows).execute()
-        logger.info(f"Upserted {len(rows)} travel-time records into core.travel_times.")
+        logger.info(f"[TravelTime] Upserted {len(rows)} records into core.travel_times")
 
     return {
         "count": len(rows),
