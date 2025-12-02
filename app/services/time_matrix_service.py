@@ -6,6 +6,25 @@ from app.services.travel_time_service import build_and_store_matrix
 logger = logging.getLogger(__name__)
 supabase = get_supabase()
 
+def _parse_bucket(ts_str: str) -> int | None:
+    """
+    Parse an ISO timestamp string and convert it into an hourly departure bucket (epoch seconds).
+    """
+    if not ts_str:
+        return None
+
+    try:
+        if ts_str.endswith("Z"):
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        else:
+            ts = datetime.fromisoformat(ts_str)
+
+        # Floor to the hour in epoch seconds
+        epoch = ts.timestamp()
+        return int(epoch // 3600) * 3600
+    except Exception as e:
+        logger.debug(f"[TimeMatrix] Failed to parse window_start '{ts_str}': {e}")
+        return None
 
 def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
     """
@@ -30,29 +49,45 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
         tasks = task_query.data or []
         if not tasks:
             logger.warning(f"[TimeMatrix] No routing_tasks found for run_id={run_id}")
-            return {"status": "empty", "matrix": {}}
+            return {
+                "status": "empty",
+                "matrix": {},
+                "node_ids": [],
+                "buckets": []
+            }
 
         # Collect node_ids and compute departure_buckets
-        nodes = {t["node_id"] for t in tasks if t.get("node_id")}
+        nodes = {t["node_id"] for t in tasks if t.get("node_id") is not None}
         buckets = set()
+        
         for t in tasks:
             ws = t.get("window_start")
-            if ws:
-                try:
-                    ts = datetime.fromisoformat(ws.replace("Z", "+00:00")).timestamp()
-                    buckets.add(int(ts // 3600) * 3600)
-                except Exception:
-                    logger.debug(f"[TimeMatrix] Invalid window_start skipped: {ws}")
+            bucket = _parse_bucket(ws) if ws else None
+            if bucket is not None:
+                buckets.add(bucket)
 
         if not nodes:
             logger.warning(f"[TimeMatrix] No valid node IDs for run_id={run_id}")
-            return {"status": "empty", "matrix": {}}
-
+            return {
+                "status": "empty",
+                "matrix": {},
+                "node_ids": [],
+                "buckets": [],
+            }
+        
         if not buckets:
-            logger.warning(f"[TimeMatrix] No valid buckets derived for run_id={run_id}")
-            return {"status": "empty", "matrix": {}}
+            logger.warning(f"[TimeMatrix] No valid departure buckets for run_id={run_id}")
+            return {
+                "status": "empty",
+                "matrix": {},
+                "node_ids": list(nodes),
+                "buckets": [],
+            }
 
-        logger.info(f"[TimeMatrix] Found node_ids={nodes}, departure_buckets={buckets}")
+        logger.info(
+            f"[TimeMatrix] Selected node_ids={sorted(list(nodes))}, "
+            f"departure_buckets={sorted(list(buckets))}"
+        )
 
         # Query cached travel_times
         tt_query = (
@@ -69,7 +104,10 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
 
         # Cache miss → rebuild
         if len(data) == 0:
-            logger.warning(f"[TimeMatrix] Cache miss for run_id={run_id}, rebuilding matrix...")
+            logger.warning(
+                f"[TimeMatrix] Cache miss (no travel_times) for run_id={run_id}, "
+                f"rebuilding matrix for selected nodes..."
+            )
             earliest_bucket = min(buckets)
 
             # Retrieve node info for rebuild
@@ -80,17 +118,26 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
                 .in_("id", list(nodes))
                 .execute()
             )
+            
             node_data = node_query.data or []
             if not node_data:
-                logger.error(f"[TimeMatrix] No node data found for run_id={run_id}")
-                return {"status": "error", "message": "no nodes available for rebuild"}
+                logger.error(
+                    f"[TimeMatrix] No node data found for selected nodes in run_id={run_id}"
+                )
+                return {
+                    "status": "error",
+                    "message": "no nodes available for rebuild",
+                    "matrix": {},
+                    "node_ids": sorted(list(nodes)),
+                    "buckets": sorted(list(buckets)),
+                }
 
             # Rebuild
             build_and_store_matrix(
                 nodes=node_data,
                 routing_preference="TRAFFIC_AWARE",
                 departure_bucket=earliest_bucket,
-                require_coords=True
+                require_coords=True,
             )
 
             # Requery after rebuild
@@ -108,21 +155,35 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
 
             if len(data) == 0:
                 logger.warning(f"[TimeMatrix] No travel_times even after rebuild for run_id={run_id}")
-                return {"status": "miss", "message": "no travel_times even after rebuild"}
+                return {
+                    "status": "miss",
+                    "message": "no travel_times even after rebuild",
+                    "matrix": {},
+                    "node_ids": sorted(list(nodes)),
+                    "buckets": sorted(list(buckets)),
+                }
 
         # Build structured matrix
         matrix = {str(o): {} for o in nodes}
+        
+        # Fill known durations from travel_times
         for row in data:
-            o, d = str(row["origin_node_id"]), str(row["dest_node_id"])
-            matrix[o][d] = row["duration"]
+            o = str(row["origin_node_id"])
+            d = str(row["dest_node_id"])
+            duration = row["duration"]
+            if o not in matrix:
+                matrix[o] = {}
+            matrix[o][d] = duration
 
-        # Fill self and missing entries
+        # Ensure self-distance 0 and missing pairs as None
         for o in nodes:
+            o_key = str(o)
             for d in nodes:
+                d_key = str(d)
                 if o == d:
-                    matrix[str(o)][str(d)] = 0
-                elif str(d) not in matrix[str(o)]:
-                    matrix[str(o)][str(d)] = None
+                    matrix[o_key][d_key] = 0
+                elif d_key not in matrix[o_key]:
+                    matrix[o_key][d_key] = None
 
         logger.info(f"[TimeMatrix] Built matrix for run_id={run_id}")
         return {
@@ -133,5 +194,5 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
         }
 
     except Exception as e:
-        logger.error(f"build_time_matrix() failed: {str(e)}")
+        logger.error(f"[TimeMatrix] build_time_matrix() failed for run_id={run_id}: {e}")
         raise
