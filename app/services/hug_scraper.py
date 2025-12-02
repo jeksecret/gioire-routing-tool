@@ -209,7 +209,7 @@ def main():
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, slow_mo=120)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
             login_and_open_shuttle_page(page)
