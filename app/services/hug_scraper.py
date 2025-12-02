@@ -23,11 +23,10 @@ load_dotenv()
 USERNAME = os.getenv("HUG_USERNAME")
 PASSWORD = os.getenv("HUG_PASSWORD")
 
-SCRAPE_YEAR = os.getenv("SCRAPE_YEAR", "2025")
-SCRAPE_MONTH = os.getenv("SCRAPE_MONTH", "10")
-SCRAPE_DAY = os.getenv("SCRAPE_DAY", "16")
-
-SCRAPE_FACILITY = "千葉大前"
+SCRAPE_FACILITY = os.getenv("SCRAPE_FACILITY")
+SCRAPE_YEAR = os.getenv("SCRAPE_YEAR")
+SCRAPE_MONTH = os.getenv("SCRAPE_MONTH")
+SCRAPE_DAY = os.getenv("SCRAPE_DAY")
 
 
 # ==========================================
