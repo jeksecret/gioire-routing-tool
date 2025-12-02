@@ -2,59 +2,58 @@ from dotenv import load_dotenv
 import os
 import re
 from datetime import datetime
-from playwright.sync_api import sync_playwright, expect
+from playwright.sync_api import sync_playwright, expect, TimeoutError as PlaywrightTimeout
+
 from app.supabase import get_supabase
 
-# optimization_run service helpers
+# optimization_run helpers
 from app.services.optimization_run import (
     get_existing_run,
     create_new_run,
     set_status_scraping,
     set_status_optimizing,
-    set_status_success,
-    set_status_failed,
+    set_status_scrape_error,
+    set_meta_json,
 )
 
 # ==========================================
-# 1) Load environment variables
+# Load environment variables
 # ==========================================
 load_dotenv()
 USERNAME = os.getenv("HUG_USERNAME")
 PASSWORD = os.getenv("HUG_PASSWORD")
 
 SCRAPE_YEAR = os.getenv("SCRAPE_YEAR", "2025")
-SCRAPE_MONTH = os.getenv("SCRAPE_MONTH", "8")
-SCRAPE_DAY = os.getenv("SCRAPE_DAY", "22")
+SCRAPE_MONTH = os.getenv("SCRAPE_MONTH", "10")
+SCRAPE_DAY = os.getenv("SCRAPE_DAY", "16")
 
 SCRAPE_FACILITY = "千葉大前"
 
 
 # ==========================================
-# 2) USE YOUR EXACT WORKING LOGIN PROCESS
+# Login flow (stable)
 # ==========================================
 def login_and_open_shuttle_page(page):
-
     print("Opening login page...")
     page.goto("https://www.hug-gioire.link/hug/wm/")
 
     print("Filling login form...")
     page.get_by_role("textbox", name="ログインID").fill(USERNAME)
-    page.get_by_role("textbox", name="パスワード").fill(PASSWORD)
+    page.get_by_role("textbox", name="パスワードs").fill(PASSWORD)
 
     page.get_by_role("button", name="ログインする").click()
     print("Login submitted...")
 
-    # EXACT iframe sequence
     page.locator("iframe").content_frame.get_by_role("heading", name="HUGからのお知らせ").click()
     page.locator("iframe").content_frame.get_by_text("お知らせ", exact=True).click()
     page.get_by_role("button", name=" 閉じる").click()
     page.get_by_role("link", name=" 今日の送迎").click()
 
-    print("✅ Opened today’s pickup/drop-off page")
+    print("✅ Opened today’s pickup & drop-off page")
 
 
 # ==========================================
-# 3) Select the route date
+# Date selection
 # ==========================================
 def select_date(page, year, month, day):
     print(f"Selecting date: {year}-{month}-{day}")
@@ -79,7 +78,7 @@ def select_date(page, year, month, day):
 
 
 # ==========================================
-# 4) Clean name extraction
+# Clean name extraction
 # ==========================================
 def extract_clean_name(raw_text: str) -> str:
     if not raw_text:
@@ -99,7 +98,7 @@ def extract_clean_name(raw_text: str) -> str:
 
 
 # ==========================================
-# 5) Scrape one facility
+# Scrape a single facility
 # ==========================================
 def scrape_single_facility(page, facility_name):
     print(f"\n🔎 Scraping facility: {facility_name}")
@@ -140,8 +139,7 @@ def scrape_single_facility(page, facility_name):
                 place = "欠席"
             else:
                 pcell = row.locator("td.place")
-                ptext = pcell.inner_text().strip() if pcell.count() > 0 else ""
-                place = ptext if ptext else "送迎なし"
+                place = pcell.inner_text().strip() if pcell.count() > 0 else "送迎なし"
 
             rows_all.append({
                 "target_time": time_val,
@@ -159,11 +157,10 @@ def scrape_single_facility(page, facility_name):
 
 
 # ==========================================
-# 6) Insert scraped data into Supabase
+# Insert into Supabase
 # ==========================================
 def insert_scraped_data_to_supabase(rows, route_date):
     supabase = get_supabase()
-    print("🚀 Inserting scraped data into Supabase...")
 
     formatted = []
     for row in rows:
@@ -178,34 +175,42 @@ def insert_scraped_data_to_supabase(rows, route_date):
             "depot_name": row["depot_name"],
             "place": row["place"],
             "target_time": target_dt.isoformat() if target_dt else None,
-            "payload": row
+            "payload": row,
         })
 
     supabase.schema("stg").from_("hug_raw_requests").insert(formatted).execute()
-    print(f"✔ Saved {len(formatted)} rows")
 
 
 # ==========================================
-# 7) MAIN
+# MAIN
 # ==========================================
 def main():
     facility = SCRAPE_FACILITY
     route_date = f"{SCRAPE_YEAR}-{SCRAPE_MONTH.zfill(2)}-{SCRAPE_DAY.zfill(2)}"
 
     existing = get_existing_run(facility, route_date)
+
+    # If run exists → show summary and skip
     if existing:
-        print("⚠ Already scraped for this facility + date. Skipping.")
+        print("⚠ Existing run found for this facility + date.")
+        print(f"ℹ Current status: {existing['status']}")
+
+        meta = existing.get("meta_json") or {}
+        row_count = meta.get("row_count", 0)
+        print(f"ℹ Previous run imported {row_count} rows.")
+
+        print("ℹ Already imported — skipping scrape.")
         return
 
-    # FIXED — create run and extract ID
-    run = create_new_run(facility, route_date, requested_by="system")
-    run_id = run["id"]
+    # Create new run
+    run_id = create_new_run(facility, route_date, requested_by="system")
 
     set_status_scraping(run_id)
+    print("✔ Run moved to scraping status")
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, slow_mo=130)
+            browser = p.chromium.launch(headless=False, slow_mo=120)
             page = browser.new_page()
 
             login_and_open_shuttle_page(page)
@@ -215,16 +220,34 @@ def main():
 
             browser.close()
 
+        # Save meta_json snapshot
+        set_meta_json(run_id, {
+            "facility_name": facility,
+            "route_date": route_date,
+            "row_count": len(rows),
+            "rows": rows,
+        })
+        print("ℹ Scraped rows recorded in meta_json")
+
+        # Move to optimizing
         set_status_optimizing(run_id)
+        print("✔ Run moved to optimizing status")
 
-        insert_scraped_data_to_supabase(rows, route_date)
+        # Insert rows only if not empty
+        if len(rows) > 0:
+            print("🚀 Inserting scraped data into Supabase...")
+            insert_scraped_data_to_supabase(rows, route_date)
+            print("✔ Saved rows to Supabase")
 
-        set_status_success(run_id)
+    except PlaywrightTimeout:
+        print("❌ TIMEOUT — marking scrape_error")
+        set_status_scrape_error(run_id)
+        return
 
     except Exception as e:
         print("❌ ERROR:", e)
-        set_status_failed(run_id)
-        raise
+        set_status_scrape_error(run_id)
+        return
 
 
 if __name__ == "__main__":

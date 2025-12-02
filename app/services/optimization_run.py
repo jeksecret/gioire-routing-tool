@@ -3,7 +3,7 @@ from app.supabase import get_supabase
 
 
 # ============================================================
-# 1) Fetch existing run (facility + date)
+# Fetch existing run (facility + date)
 # ============================================================
 def get_existing_run(facility_name: str, route_date: str):
     supabase = get_supabase()
@@ -19,7 +19,7 @@ def get_existing_run(facility_name: str, route_date: str):
 
 
 # ============================================================
-# 2) Create new run
+# Create new run
 # ============================================================
 def create_new_run(facility_name: str, route_date: str, requested_by="system"):
     supabase = get_supabase()
@@ -28,7 +28,7 @@ def create_new_run(facility_name: str, route_date: str, requested_by="system"):
         "route_date": route_date,
         "status": "pending",
         "requested_by": requested_by,
-        # use DB defaults for created_at
+        "created_at": datetime.utcnow().isoformat(),
     }
 
     res = (
@@ -38,45 +38,53 @@ def create_new_run(facility_name: str, route_date: str, requested_by="system"):
         .execute()
     )
 
-    # Return full object because scraper expects it
-    return res.data[0]
+    return res.data[0]["id"]
 
 
 # ============================================================
-# 3) Status updates
+# Update status: scraping
 # ============================================================
 def set_status_scraping(run_id: int):
     supabase = get_supabase()
     supabase.schema("run").from_("optimization_run").update(
         {
             "status": "scraping",
-            "started_at": "now()",   # let Postgres handle timestamp
+            "started_at": datetime.utcnow().isoformat(),
         }
     ).eq("id", run_id).execute()
 
 
+# ============================================================
+# Update status: optimizing
+# ============================================================
 def set_status_optimizing(run_id: int):
     supabase = get_supabase()
     supabase.schema("run").from_("optimization_run").update(
-        {"status": "optimizing"}
-    ).eq("id", run_id).execute()
-
-
-def set_status_success(run_id: int):
-    supabase = get_supabase()
-    supabase.schema("run").from_("optimization_run").update(
         {
-            "status": "success",
-            "finished_at": "now()",  # let Postgres handle timestamp
+            "status": "optimizing",
+            "finished_at": datetime.utcnow().isoformat(),
         }
     ).eq("id", run_id).execute()
 
 
-def set_status_failed(run_id: int):
+# ============================================================
+# Update status: scrape_error
+# ============================================================
+def set_status_scrape_error(run_id: int):
     supabase = get_supabase()
     supabase.schema("run").from_("optimization_run").update(
         {
-            "status": "failed",
-            "finished_at": "now()",
+            "status": "scrape_error",
+            "finished_at": datetime.utcnow().isoformat(),
         }
+    ).eq("id", run_id).execute()
+
+
+# ============================================================
+# Save meta_json snapshot
+# ============================================================
+def set_meta_json(run_id: int, meta: dict):
+    supabase = get_supabase()
+    supabase.schema("run").from_("optimization_run").update(
+        {"meta_json": meta}
     ).eq("id", run_id).execute()
