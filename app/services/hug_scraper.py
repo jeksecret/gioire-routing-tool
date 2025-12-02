@@ -38,7 +38,7 @@ def login_and_open_shuttle_page(page):
 
     print("Filling login form...")
     page.get_by_role("textbox", name="ログインID").fill(USERNAME)
-    page.get_by_role("textbox", name="パスワードs").fill(PASSWORD)
+    page.get_by_role("textbox", name="パスワード").fill(PASSWORD)
 
     page.get_by_role("button", name="ログインする").click()
     print("Login submitted...")
