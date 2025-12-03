@@ -59,10 +59,21 @@ def select_date(page, year, month, day):
 
     page.get_by_role("listitem").filter(has_text="日付").click()
 
-    page.locator("#ui-datepicker-div").get_by_role("combobox").first.select_option(year)
-    page.locator("#ui-datepicker-div").get_by_role("combobox").nth(1).select_option(month)
-    page.get_by_role("link", name=day).click()
+    # Convert month/day to single-digit numbers when needed
+    year_str = str(int(year))
+    month_str = str(int(month))   # ensures "03" -> "3"
+    day_str = str(int(day))       # ensures "03" -> "3"
 
+    # Select year
+    page.locator("#ui-datepicker-div").get_by_role("combobox").first.select_option(year_str)
+
+    # Select month
+    page.locator("#ui-datepicker-div").get_by_role("combobox").nth(1).select_option(month_str)
+
+    # Select day (EXACT match)
+    page.get_by_role("link", name=day_str, exact=True).click()
+
+    # Close datepicker if needed
     try:
         page.get_by_role("button", name="閉じる").click(timeout=500)
     except:
@@ -209,7 +220,10 @@ def main():
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-gpu", "--no-sandbox"]
+            )
             page = browser.new_page()
 
             login_and_open_shuttle_page(page)
@@ -218,6 +232,7 @@ def main():
             rows = scrape_single_facility(page, facility)
 
             browser.close()
+
 
         # Save meta_json snapshot
         set_meta_json(run_id, {
