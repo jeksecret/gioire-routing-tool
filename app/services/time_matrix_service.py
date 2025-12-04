@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.supabase import get_supabase
 from app.services.travel_time_service import build_and_store_matrix
 
@@ -38,6 +38,39 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
     5. Return a structured matrix {origin_id: {dest_id: duration}}.
     """
     try:
+        # Load optimization_run entry
+        run_query = (
+            supabase.schema("run")
+            .from_("optimization_run")
+            .select("meta_json, route_date")
+            .eq("id", run_id)
+            .single()
+            .execute()
+        )
+
+        if not run_query.data:
+            return {
+                "status": "error",
+                "message": f"run_id={run_id} not found",
+                "matrix": {},
+                "node_ids": [],
+                "buckets": [],
+            }
+
+        route_date = run_query.data.get("route_date")
+        today_jst = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
+
+        if route_date != today_jst:
+            logger.info(f"[TimeMatrix] run_id={run_id} is for date={route_date}, not today={today_jst}. Skipping matrix build.")
+            return {
+                "status": "ignored_old_run",
+                "message": "Route date does not match today; matrix build skipped.",
+                "matrix": {},
+                "node_ids": [],
+                "buckets": [],
+                "route_date": route_date,
+            }
+        
         # Retrieve routing_tasks for this run
         task_query = (
             supabase.schema("run")
@@ -73,6 +106,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
                 "matrix": {},
                 "node_ids": [],
                 "buckets": [],
+                "route_date": route_date,
             }
         
         if not buckets:
@@ -82,6 +116,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
                 "matrix": {},
                 "node_ids": list(nodes),
                 "buckets": [],
+                "route_date": route_date,
             }
 
         logger.info(
@@ -130,6 +165,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
                     "matrix": {},
                     "node_ids": sorted(list(nodes)),
                     "buckets": sorted(list(buckets)),
+                    "route_date": route_date,
                 }
 
             # Rebuild
@@ -161,6 +197,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
                     "matrix": {},
                     "node_ids": sorted(list(nodes)),
                     "buckets": sorted(list(buckets)),
+                    "route_date": route_date,
                 }
 
         # Build structured matrix
@@ -191,6 +228,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
             "matrix": matrix,
             "node_ids": sorted(list(nodes)),
             "buckets": sorted(list(buckets)),
+            "route_date": route_date,
         }
 
     except Exception as e:
