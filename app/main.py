@@ -5,6 +5,7 @@ from app.routes.api.travel_times import router as travel_times_router
 from app.routes.api.task_split import router as task_split_router
 from app.routes.api.time_matrix import router as time_matrix_router
 from app.routes.api.scraper_router import router as scraper_router
+from app.routes.api.ortools import router as ortools_router
 
 load_dotenv()
 
@@ -25,3 +26,4 @@ app.include_router(travel_times_router, prefix="/api/travel-times")
 app.include_router(task_split_router, prefix="/api/task")
 app.include_router(time_matrix_router, prefix="/api/time-matrix")
 app.include_router(scraper_router, prefix="/api/hug")
+app.include_router(ortools_router, prefix="/api/ortools")
