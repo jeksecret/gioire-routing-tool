@@ -214,7 +214,7 @@ def main():
 
     # Create new run
     run_id = create_new_run(facility, route_date, requested_by="system")
-    print(f"🆔 optimization_run_id: {run_id}")
+    print(f"__RUN_ID__={run_id}")
     set_status_scraping(run_id)
     print("✔ Run moved to scraping status")
 

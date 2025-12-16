@@ -5,11 +5,13 @@ import subprocess
 
 router = APIRouter()
 
+
 class HugScrapeRequest(BaseModel):
     SCRAPE_FACILITY: str
     SCRAPE_YEAR: int
     SCRAPE_MONTH: int
     SCRAPE_DAY: int
+
 
 @router.post("/hug-scraper/run")
 def run_hug_scraper(req: HugScrapeRequest):
@@ -32,10 +34,21 @@ def run_hug_scraper(req: HugScrapeRequest):
             text=True
         )
 
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        # 🔍 Extract optimization_run_id from stdout
+        optimization_run_id = None
+        for line in stdout.splitlines():
+            if line.startswith("__RUN_ID__="):
+                optimization_run_id = int(line.split("=", 1)[1])
+                break
+
         return {
             "status": "ok",
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "optimization_run_id": optimization_run_id,
+            "stdout": stdout,
+            "stderr": stderr,
         }
 
     except Exception as e:
