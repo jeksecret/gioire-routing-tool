@@ -9,7 +9,7 @@ supabase = get_supabase()
 
 def load_run(run_id: int) -> dict | None:
     """Load optimization_run entry."""
-    q = (
+    run_q = (
         supabase.schema("run")
         .from_("optimization_run")
         .select("*")
@@ -17,11 +17,11 @@ def load_run(run_id: int) -> dict | None:
         .single()
         .execute()
     )
-    return q.data or None
+    return run_q.data or None
 
 def load_tasks(run_id: int) -> List[dict]:
     """Load routing tasks for this run."""
-    q = (
+    task_q = (
         supabase.schema("run")
         .from_("routing_tasks")
         .select("id, task_type, user_id, node_id, depot_id, window_start, window_end")
@@ -29,30 +29,48 @@ def load_tasks(run_id: int) -> List[dict]:
         .order("id")
         .execute()
     )
-    return q.data or []
-
+    return task_q.data or []
 
 def load_vehicles_for_facility(facility_name: str) -> List[dict]:
-    """Load vehicle list based on optimization_run.facility_name."""
-    q = (
+    """
+    Load vehicles that belong to the depot matching optimization_run.facility_name.
+    facility_name == depots.depot_name
+    """
+    depot_q = (
+        supabase.schema("core")
+        .from_("depots")
+        .select("id")
+        .eq("depot_name", facility_name)
+        .single()
+        .execute()
+    )
+
+    if not depot_q.data:
+        logger.warning(f"[OR-Tools] No depot found for facility_name={facility_name}")
+        return []
+
+    depot_id = depot_q.data["id"]
+
+    vehicle_q = (
         supabase.schema("core")
         .from_("vehicles")
         .select("id, vehicle_name, seats, depot_id")
-        .eq("facility_name", facility_name)
+        .eq("depot_id", depot_id)
+        .eq("active", True)
         .execute()
     )
-    return q.data or []
 
+    return vehicle_q.data or []
 
 def load_depots() -> Dict[int, dict]:
     """Load all depots indexed by depot_id."""
-    q = (
+    depot_q = (
         supabase.schema("core")
         .from_("depots")
         .select("id, depot_name, depot_node_id")
         .execute()
     )
-    return {d["id"]: d for d in (q.data or [])}
+    return {d["id"]: d for d in (depot_q.data or [])}
 
 # Build OR-Tools payload
 def build_ortools_payload(run_id: int) -> Dict[str, Any]:
@@ -143,7 +161,6 @@ def build_ortools_payload(run_id: int) -> Dict[str, Any]:
             "user_id": t["user_id"],
             "window": [window_start, window_end],
         })
-
 
     # Final OR-Tools payload
     payload = {

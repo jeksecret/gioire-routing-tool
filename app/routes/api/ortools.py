@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from app.services.ortools_request_service import build_ortools_payload
 
-router = APIRouter(prefix="/api/ortools", tags=["ortools"])
+router = APIRouter()
 
 @router.post("/build-ortools")
 async def build_ortools(run_id: int):
