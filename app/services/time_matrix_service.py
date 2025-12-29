@@ -63,7 +63,7 @@ def build_time_matrix(run_id: int, profile: str = "driving") -> dict:
         if route_date != today_jst:
             logger.info(f"[TimeMatrix] run_id={run_id} is for date={route_date}, not today={today_jst}. Skipping matrix build.")
             return {
-                "status": "ignored_old_run",
+                "status": "error",
                 "message": "Route date does not match today; matrix build skipped.",
                 "matrix": {},
                 "node_ids": [],
