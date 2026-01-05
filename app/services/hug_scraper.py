@@ -3,7 +3,6 @@ import os
 import re
 from datetime import datetime
 from playwright.sync_api import sync_playwright, expect, TimeoutError as PlaywrightTimeout
-
 from app.supabase import get_supabase
 
 # optimization_run helpers
@@ -20,6 +19,12 @@ from app.services.optimization_run import (
 # Load environment variables
 # ==========================================
 load_dotenv()
+print("DOTENV CHECK:",
+        os.getenv("SCRAPE_FACILITY"),
+        os.getenv("SCRAPE_YEAR"),
+        os.getenv("SCRAPE_MONTH"),
+        os.getenv("SCRAPE_DAY"))
+
 USERNAME = os.getenv("HUG_USERNAME")
 PASSWORD = os.getenv("HUG_PASSWORD")
 
@@ -43,11 +48,13 @@ def login_and_open_shuttle_page(page):
     page.get_by_role("button", name="ログインする").click()
     print("Login submitted...")
 
-    page.locator("iframe").content_frame.get_by_role("heading", name="HUGからのお知らせ").click()
-    page.locator("iframe").content_frame.get_by_text("お知らせ", exact=True).click()
-    page.get_by_role("button", name=" 閉じる").click()
-    page.get_by_role("link", name=" 今日の送迎").click()
+    try:
+        page.get_by_role("button", name=" 閉じる").click(timeout=3000)
+        print("🧹 Popup closed")
+    except PlaywrightTimeout:
+            print("ℹ️ No popup appeared (OK)")
 
+    page.get_by_role("link", name=" 今日の送迎").click()
     print("✅ Opened today’s pickup & drop-off page")
 
 
@@ -221,7 +228,7 @@ def main():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=True,
+                headless=False,
                 args=["--disable-gpu", "--no-sandbox"]
             )
             page = browser.new_page()
