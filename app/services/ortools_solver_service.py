@@ -9,20 +9,33 @@ DEFAULT_FIXED_VEHICLE_COST = 1_000_000
 MAX_SOLVE_SECONDS = 30
 
 def _parse_tasks(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    tasks: List[Dict[str, Any]] = []
+    """
+    Expected task shape:
+      {
+        "task_id": int,
+        "task_type": "PICK" | "DROP",
+        "node_index": int,          # index into payload.time_matrix (physical node)
+        "user_id": int,
+        "pair_key": str,            # required for multi-task users
+        "window": [start_unix, end_unix]
+      }
+    """
+    out: List[Dict[str, Any]] = []
     for t in payload.get("tasks", []) or []:
         w = t.get("window") or [None, None]
         if w[0] is None or w[1] is None:
             continue
-        tasks.append({
-            "task_id": t["task_id"],
+
+        out.append({
+            "task_id": int(t["task_id"]),
             "task_type": str(t["task_type"]).upper(),  # PICK / DROP
-            "node_index": int(t["node_index"]),
-            "user_id": t["user_id"],
+            "node_index": int(t["node_index"]),        # physical node index in matrix
+            "user_id": int(t["user_id"]),
+            "pair_key": t.get("pair_key"),
             "window_start": int(w[0]),
             "window_end": int(w[1]),
         })
-    return tasks
+    return out
 
 def _relative_time_base(tasks: List[Dict[str, Any]], buckets: List[int]) -> int:
     """
@@ -34,133 +47,208 @@ def _relative_time_base(tasks: List[Dict[str, Any]], buckets: List[int]) -> int:
         return int(buckets[0])
     return 0
 
-def _task_delta(task: Dict[str, Any]) -> int:
-    """
-    Passenger delta for a task.
-    """
-    t = task.get("task_type")
-    if t == "PICK":
+def _task_delta(task_type: str) -> int:
+    if task_type == "PICK":
         return 1
-    if t == "DROP":
+    if task_type == "DROP":
         return -1
     return 0
 
-def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict[str, Any]:
-    """
-    Output: OR-Tools solution (routes + stops).
-    - event_type: DEPART / TASK / ARRIVE
-    - task_id: always set (FK to run.routing_tasks.id)
-      - DEPART: first task_id
-      - ARRIVE: last task_id
-      - TASK: mapped task_id for that visited node (node-based assumption)
-    - passengers: computed manually from TASK sequence (PICK +1, DROP -1)
-    """
-    time_matrix: List[List[int]] = payload.get("time_matrix") or []
+def _validate_inputs(time_matrix: List[List[int]], vehicles: List[dict], tasks: List[dict]) -> Optional[str]:
     if not time_matrix:
-        return {"status": "error", "message": "time_matrix missing"}
+        return "time_matrix missing"
 
     n = len(time_matrix)
     for row in time_matrix:
         if len(row) != n:
-            return {"status": "error", "message": "time_matrix must be NxN"}
+            return "time_matrix must be NxN"
 
-    vehicles = payload.get("vehicles") or []
     if not vehicles:
-        return {"status": "error", "message": "vehicles missing"}
+        return "vehicles missing"
 
-    tasks = _parse_tasks(payload)
     if not tasks:
-        return {"status": "error", "message": "tasks missing"}
+        return "tasks missing"
 
-    # Build quick lookup for manual passenger tracking
-    tasks_by_id: Dict[int, Dict[str, Any]] = {int(t["task_id"]): t for t in tasks}
+    # Validate indices
+    for v in vehicles:
+        si = int(v.get("start_index", -1))
+        ei = int(v.get("end_index", -1))
+        if si < 0 or si >= n or ei < 0 or ei >= n:
+            return f"vehicle start/end index out of range: start_index={si}, end_index={ei}, n={n}"
+
+    for t in tasks:
+        ni = int(t["node_index"])
+        if ni < 0 or ni >= n:
+            return f"task node_index out of range: task_id={t['task_id']} node_index={ni} n={n}"
+
+    # pair_key strongly required when multiple tasks per user
+    users = defaultdict(lambda: {"PICK": 0, "DROP": 0})
+    for t in tasks:
+        users[int(t["user_id"])][t["task_type"]] += 1
+
+    for uid, c in users.items():
+        if c["PICK"] > 1 or c["DROP"] > 1:
+            if not all(tt.get("pair_key") for tt in tasks if int(tt["user_id"]) == uid):
+                return (
+                    f"user_id={uid} has multiple PICK/DROP tasks, but pair_key is missing. "
+                    "pair_key is required to pair correctly."
+                )
+
+    return None
+
+def _build_pairs_by_pair_key(tasks: List[Dict[str, Any]], tasknode_of_task_id: Dict[int, int]) -> List[Tuple[int, int]]:
+    """
+    Return list of (pickup_task_node, drop_task_node) in *routing-node space*.
+
+    Pairing is done by pair_key:
+      - each pair_key must have exactly one PICK and one DROP to be paired.
+    """
+    by_key: Dict[str, Dict[str, int]] = defaultdict(dict)
+
+    for t in tasks:
+        key = t.get("pair_key")
+        if not key:
+            continue
+        tt = t["task_type"]
+        if tt not in ("PICK", "DROP"):
+            continue
+        by_key[key][tt] = int(t["task_id"])
+
+    pairs: List[Tuple[int, int]] = []
+    for key, d in by_key.items():
+        if "PICK" not in d or "DROP" not in d:
+            logger.warning(f"[OR-Tools] pair_key={key} incomplete; needs both PICK and DROP. Skipping.")
+            continue
+
+        pick_task_id = int(d["PICK"])
+        drop_task_id = int(d["DROP"])
+
+        if pick_task_id not in tasknode_of_task_id or drop_task_id not in tasknode_of_task_id:
+            logger.warning(f"[OR-Tools] pair_key={key} task_id missing in tasknode map. Skipping.")
+            continue
+
+        pairs.append((tasknode_of_task_id[pick_task_id], tasknode_of_task_id[drop_task_id]))
+
+    return pairs
+
+
+def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    OR-Tools Solver (Task-based routing)
+
+    - Each TASK becomes its own OR-Tools node.
+    - Travel time is computed by mapping task-nodes to physical node_index in the original matrix.
+    - Time windows are applied per task-node (not per physical node).
+    - Pickup/Delivery constraints are applied per pair_key using task-nodes.
+    - passengers are computed manually from TASK order (PICK +1, DROP -1).
+    """
+    time_matrix: List[List[int]] = payload.get("time_matrix") or []
+    vehicles = payload.get("vehicles") or []
+    tasks = _parse_tasks(payload)
+
+    err = _validate_inputs(time_matrix, vehicles, tasks)
+    if err:
+        return {"status": "error", "message": err}
 
     buckets = payload.get("buckets") or []
     base_time = _relative_time_base(tasks, buckets)
 
-    # task_id -> relative window
-    rel_windows: Dict[int, Tuple[int, int]] = {}
-    for t in tasks:
-        rel_windows[int(t["task_id"])] = (
-            int(t["window_start"] - base_time),
-            int(t["window_end"] - base_time),
-        )
+    # Build routing-node universe
+    # Create routing nodes as:
+    #   - depot nodes: one per distinct physical depot index used by vehicles
+    #   - task nodes: one per task (PICK/DROP), each mapped to an underlying physical node_index
+    phys_starts = [int(v["start_index"]) for v in vehicles]
+    phys_ends = [int(v["end_index"]) for v in vehicles]
+    depot_phys_nodes: List[int] = sorted(set(phys_starts + phys_ends))
 
-    # node_index -> ordered task_ids (stable deterministic order)
-    node_to_task_ids: Dict[int, List[int]] = defaultdict(list)
-    for t in sorted(tasks, key=lambda x: int(x["task_id"])):
-        node_to_task_ids[int(t["node_index"])].append(int(t["task_id"]))
+    depot_rnode_of_phys: Dict[int, int] = {phys: i for i, phys in enumerate(depot_phys_nodes)}
+    depot_count = len(depot_phys_nodes)
 
-    starts = [int(v["start_index"]) for v in vehicles]
-    ends = [int(v["end_index"]) for v in vehicles]
+    # Task routing node index starts after depot nodes
+    task_rnode_of_task_id: Dict[int, int] = {}
+    routing_to_phys: List[int] = []
+
+    # routing_to_phys[routing_node] = physical node_index into time_matrix
+    routing_to_phys.extend(depot_phys_nodes)
+
+    for i, t in enumerate(tasks):
+        rnode = depot_count + i
+        task_rnode_of_task_id[int(t["task_id"])] = rnode
+        routing_to_phys.append(int(t["node_index"]))
+
+    total_nodes = depot_count + len(tasks)
+
+    # Map vehicles start/end to routing nodes
+    starts = [depot_rnode_of_phys[int(v["start_index"])] for v in vehicles]
+    ends = [depot_rnode_of_phys[int(v["end_index"])] for v in vehicles]
     num_vehicles = len(vehicles)
 
-    manager = pywrapcp.RoutingIndexManager(n, num_vehicles, starts, ends)
+    manager = pywrapcp.RoutingIndexManager(total_nodes, num_vehicles, starts, ends)
     routing = pywrapcp.RoutingModel(manager)
 
+    # Cost / Transit
     def time_cb(from_index: int, to_index: int) -> int:
-        f = manager.IndexToNode(from_index)
-        tnode = manager.IndexToNode(to_index)
-        return int(time_matrix[f][tnode])
+        frm = manager.IndexToNode(from_index)
+        to = manager.IndexToNode(to_index)
+        phys_from = routing_to_phys[int(frm)]
+        phys_to = routing_to_phys[int(to)]
+        return int(time_matrix[phys_from][phys_to])
 
     transit_cb_index = routing.RegisterTransitCallback(time_cb)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_cb_index)
 
-    # Time dimension (allows waiting)
+    # Time dimension
+    rel_windows: Dict[int, Tuple[int, int]] = {
+        int(t["task_id"]): (int(t["window_start"] - base_time), int(t["window_end"] - base_time))
+        for t in tasks
+    }
     latest_end = max(w[1] for w in rel_windows.values())
     horizon = int(latest_end + 3600)  # 1h buffer after latest window end
+
     routing.AddDimension(
         transit_cb_index,
         6 * 3600,   # waiting slack
-        horizon,    # horizon
+        horizon,
         False,      # don't force start at 0
         "Time",
     )
     time_dim = routing.GetDimensionOrDie("Time")
 
-    # Capacity dimension (kept for feasibility), but DO NOT use it for passengers output
-    def demand_for_node(node: int) -> int:
-        d = 0
-        for t in tasks:
-            if int(t["node_index"]) != node:
-                continue
-            if t["task_type"] == "PICK":
-                d += 1
-            elif t["task_type"] == "DROP":
-                d -= 1
-        return d
+    # Apply time windows PER TASK NODE (this is the key fix)
+    for t in tasks:
+        task_id = int(t["task_id"])
+        ws, we = rel_windows[task_id]
+        rnode = task_rnode_of_task_id[task_id]
+        ridx = manager.NodeToIndex(rnode)
+        time_dim.CumulVar(ridx).SetRange(int(ws), int(we))
+
+    # Capacity dimension (per TASK NODE)
+    # Demand is 0 at depots, +/-1 at task nodes based on PICK/DROP.
+    task_by_rnode: Dict[int, Dict[str, Any]] = {task_rnode_of_task_id[int(t["task_id"])]: t for t in tasks}
 
     def demand_cb(from_index: int) -> int:
-        node = manager.IndexToNode(from_index)
-        return int(demand_for_node(node))
+        rnode = manager.IndexToNode(from_index)
+        t = task_by_rnode.get(int(rnode))
+        if not t:
+            return 0
+        return _task_delta(t["task_type"])
 
     demand_cb_index = routing.RegisterUnaryTransitCallback(demand_cb)
     capacities = [int(v.get("capacity", 0)) for v in vehicles]
 
     routing.AddDimensionWithVehicleCapacity(
         demand_cb_index,
-        0,
+        0,          # slack
         capacities,
-        True,   # start at 0
+        True,       # start cumul at 0
         "Capacity",
     )
-    # NOTE: cap_dim is intentionally not used for output passengers.
-    cap_dim = routing.GetDimensionOrDie("Capacity")
 
-    # Pickup & delivery pairing by user_id (node-based)
-    user_pick: Dict[int, int] = {}
-    user_drop: Dict[int, int] = {}
-    for t in tasks:
-        uid = int(t["user_id"])
-        node_idx = int(t["node_index"])
-        if t["task_type"] == "PICK":
-            user_pick[uid] = node_idx
-        elif t["task_type"] == "DROP":
-            user_drop[uid] = node_idx
-
-    for user_id in set(user_pick) & set(user_drop):
-        p = manager.NodeToIndex(int(user_pick[user_id]))
-        d = manager.NodeToIndex(int(user_drop[user_id]))
+    # Pickup & delivery pairing (by pair_key -> task nodes)
+    pairs = _build_pairs_by_pair_key(tasks, task_rnode_of_task_id)
+    for pick_rnode, drop_rnode in pairs:
+        p = manager.NodeToIndex(int(pick_rnode))
+        d = manager.NodeToIndex(int(drop_rnode))
         routing.AddPickupAndDelivery(p, d)
         routing.solver().Add(routing.VehicleVar(p) == routing.VehicleVar(d))
         routing.solver().Add(time_dim.CumulVar(p) <= time_dim.CumulVar(d))
@@ -178,32 +266,34 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
     if solution is None:
         return {"status": "error", "message": "no feasible solution"}
 
+    # Build output
     routes_out: List[Dict[str, Any]] = []
+
+    # task_id -> task dict for output + passenger calc
+    tasks_by_id: Dict[int, Dict[str, Any]] = {int(t["task_id"]): t for t in tasks}
 
     for v_i, v in enumerate(vehicles):
         vehicle_id = int(v["vehicle_id"])
         index = routing.Start(v_i)
 
-        # Build visit list (exclude end)
-        visited_nodes: List[int] = []
+        # Collect visited TASK nodes (exclude end); store task_ids in visit order
+        visit_task_ids: List[int] = []
         temp = index
         while not routing.IsEnd(temp):
             nxt = solution.Value(routing.NextVar(temp))
             if routing.IsEnd(nxt):
                 break
-            visited_nodes.append(manager.IndexToNode(nxt))
+
+            rnode = int(manager.IndexToNode(nxt))
+            if rnode >= depot_count:
+                # This is a task-node
+                # Recover task_id from inverse map
+                for tid, rn in task_rnode_of_task_id.items():
+                    if rn == rnode:
+                        visit_task_ids.append(int(tid))
+                        break
+
             temp = nxt
-
-        # Assign task_ids in visit order, consuming from node_to_task_ids
-        consumption_cursor: Dict[int, int] = defaultdict(int)
-        visit_task_ids: List[int] = []
-
-        for node in visited_nodes:
-            ids = node_to_task_ids.get(int(node), [])
-            cur = consumption_cursor[int(node)]
-            if cur < len(ids):
-                visit_task_ids.append(int(ids[cur]))
-                consumption_cursor[int(node)] += 1
 
         if not visit_task_ids:
             continue  # unused vehicle
@@ -211,27 +301,27 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         first_task_id = int(visit_task_ids[0])
         last_task_id = int(visit_task_ids[-1])
 
-        seq = 0
         stops: List[Dict[str, Any]] = []
-
-        # Manual passenger tracking
+        seq = 0
         current_passengers = 0
 
-        # DEPART (anchored to first task_id)
-        start_node = manager.IndexToNode(index)
-        t0 = int(solution.Value(time_dim.CumulVar(index)))
+        # DEPART
+        start_rnode = int(manager.IndexToNode(routing.Start(v_i)))
+        start_phys = int(routing_to_phys[start_rnode])
+        t0 = int(solution.Value(time_dim.CumulVar(routing.Start(v_i))))
+
         stops.append({
             "sequence": seq,
             "event_type": "DEPART",
             "vehicle_id": vehicle_id,
-            "node_index": int(start_node),
-            "task_id": first_task_id,
+            "node_index": start_phys,      # physical node_index
+            "task_id": first_task_id,      # anchored
             "arrival_at": int(base_time + t0),
             "departure_at": int(base_time + t0),
             "passengers": int(current_passengers),
         })
 
-        # TASK stops: only when we consumed a task_id for that visit
+        # TASK stops
         index = routing.Start(v_i)
         task_ptr = 0
 
@@ -241,33 +331,24 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
                 index = nxt
                 break
 
-            node = int(manager.IndexToNode(nxt))
-            ids = node_to_task_ids.get(node, [])
-
-            used_count_for_node = sum(
-                1 for s in stops
-                if s["event_type"] == "TASK" and int(s["node_index"]) == node
-            )
-
-            if used_count_for_node < len(ids):
+            rnode = int(manager.IndexToNode(nxt))
+            if rnode >= depot_count:
+                # TASK
                 seq += 1
                 tt = int(solution.Value(time_dim.CumulVar(nxt)))
+
                 task_id = int(visit_task_ids[task_ptr])
                 task_ptr += 1
+                task = tasks_by_id[task_id]
 
-                # Update passengers based on the actual task
-                task = tasks_by_id.get(task_id)
-                if task is None:
-                    return {"status": "error", "message": f"task_id not found in tasks_by_id: {task_id}"}
-
-                current_passengers += _task_delta(task)
+                current_passengers += _task_delta(task["task_type"])
 
                 stops.append({
                     "sequence": seq,
                     "event_type": "TASK",
                     "vehicle_id": vehicle_id,
-                    "node_index": node,
-                    "task_id": task_id,
+                    "node_index": int(task["node_index"]),  # physical node index
+                    "task_id": int(task_id),
                     "arrival_at": int(base_time + tt),
                     "departure_at": int(base_time + tt),
                     "passengers": int(current_passengers),
@@ -275,16 +356,18 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
 
             index = nxt
 
-        # ARRIVE (anchored to last task_id)
+        # ARRIVE
         seq += 1
-        end_node = manager.IndexToNode(index)
+        end_rnode = int(manager.IndexToNode(index))
+        end_phys = int(routing_to_phys[end_rnode])
         te = int(solution.Value(time_dim.CumulVar(index)))
+
         stops.append({
             "sequence": seq,
             "event_type": "ARRIVE",
             "vehicle_id": vehicle_id,
-            "node_index": int(end_node),
-            "task_id": last_task_id,
+            "node_index": end_phys,        # physical node_index
+            "task_id": last_task_id,       # anchored
             "arrival_at": int(base_time + te),
             "departure_at": int(base_time + te),
             "passengers": int(current_passengers),
