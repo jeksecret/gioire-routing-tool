@@ -207,8 +207,12 @@ def main():
 
     existing = get_existing_run(facility, route_date)
 
-    # If run exists → show summary and skip
     if existing:
+        run_id = existing["id"]
+
+        # 👇 CRITICAL: emit run id in the same format as new runs
+        print(f"__RUN_ID__={run_id}")
+
         print("⚠ Existing run found for this facility + date.")
         print(f"ℹ Current status: {existing['status']}")
 
@@ -219,6 +223,7 @@ def main():
         print("ℹ Already imported — skipping scrape.")
         return
 
+
     # Create new run
     run_id = create_new_run(facility, route_date, requested_by="system")
     print(f"__RUN_ID__={run_id}")
@@ -228,7 +233,7 @@ def main():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=False,
+                headless=True,
                 args=["--disable-gpu", "--no-sandbox"]
             )
             page = browser.new_page()
