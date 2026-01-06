@@ -168,6 +168,7 @@ def split_and_create_tasks(run_id: int):
     for t in existing_query.data or []:
         existing_map[(t["user_id"], t["task_type"])] = t["id"]
 
+    trip_seq = 0
     # Generate tasks for each row
     for r in rows:
         user_name = r.get("user_name")
@@ -199,7 +200,8 @@ def split_and_create_tasks(run_id: int):
         except Exception:
             travel_min = 30 # fallback
 
-        pair_key = f"user_{user_id}_{base_date.strftime('%Y%m%d')}"
+        trip_seq += 1
+        pair_key = f"user_{user_id}_{base_date.strftime('%Y%m%d')}_{trip_seq}"
         is_pickup = "迎" in str(pickup_flag_raw)
 
         # Build PICK & DROP windows
