@@ -1,4 +1,9 @@
 import logging
+import json
+import os
+import socket
+import urllib.request
+from urllib.error import URLError
 from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
@@ -6,19 +11,22 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 logger = logging.getLogger(__name__)
 
 DEFAULT_FIXED_VEHICLE_COST = 1_000_000
-MAX_SOLVE_SECONDS = 30
+MAX_SOLVE_SECONDS = 60
+
+_DEFAULT_TIMEOUT = int(os.environ.get("MAKE_HTTP_TIMEOUT_SECONDS", "120"))
+_MAKE_WEBHOOK_URL = os.environ.get("MAKE_OR_TOOLS_RESULT_WEBHOOK")
 
 def _parse_tasks(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Expected task shape:
-      {
-        "task_id": int,
-        "task_type": "PICK" | "DROP",
-        "node_index": int,          # index into payload.time_matrix (physical node)
-        "user_id": int,
-        "pair_key": str,            # required for multi-task users
-        "window": [start_unix, end_unix]
-      }
+    {
+    "task_id": int,
+    "task_type": "PICK" | "DROP",
+    "node_index": int,          # index into payload.time_matrix (physical node)
+    "user_id": int,
+    "pair_key": str,            # required for multi-task users
+    "window": [start_unix, end_unix]
+    }
     """
     out: List[Dict[str, Any]] = []
     for t in payload.get("tasks", []) or []:
@@ -101,7 +109,7 @@ def _build_pairs_by_pair_key(tasks: List[Dict[str, Any]], tasknode_of_task_id: D
     Return list of (pickup_task_node, drop_task_node) in *routing-node space*.
 
     Pairing is done by pair_key:
-      - each pair_key must have exactly one PICK and one DROP to be paired.
+    - each pair_key must have exactly one PICK and one DROP to be paired.
     """
     by_key: Dict[str, Dict[str, int]] = defaultdict(dict)
 
@@ -313,7 +321,6 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         stops.append({
             "sequence": seq,
             "event_type": "DEPART",
-            "vehicle_id": vehicle_id,
             "node_index": start_phys,      # physical node_index
             "task_id": first_task_id,      # anchored
             "arrival_at": int(base_time + t0),
@@ -346,7 +353,6 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
                 stops.append({
                     "sequence": seq,
                     "event_type": "TASK",
-                    "vehicle_id": vehicle_id,
                     "node_index": int(task["node_index"]),  # physical node index
                     "task_id": int(task_id),
                     "arrival_at": int(base_time + tt),
@@ -365,7 +371,6 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         stops.append({
             "sequence": seq,
             "event_type": "ARRIVE",
-            "vehicle_id": vehicle_id,
             "node_index": end_phys,        # physical node_index
             "task_id": last_task_id,       # anchored
             "arrival_at": int(base_time + te),
@@ -389,3 +394,32 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         "node_ids": payload.get("node_ids"),
         "node_index": payload.get("node_index"),
     }
+
+def post_solver_result_to_make(
+    payload: Dict[str, Any],
+    timeout_sec: int = _DEFAULT_TIMEOUT,
+) -> Tuple[int, str]:
+    """
+    POST OR-Tools solver output to Make Scenario 2 webhook.
+    """
+    if not _MAKE_WEBHOOK_URL:
+        raise RuntimeError("MAKE_OR_TOOLS_RESULT_WEBHOOK is not set")
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    req = urllib.request.Request(
+        _MAKE_WEBHOOK_URL,
+        data=body,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            status = resp.getcode()
+            text = resp.read().decode("utf-8")
+            logger.info(f"[OR-Tools] Posted solver result to Make (status={status})")
+            return status, text
+    except (socket.timeout, URLError) as e:
+        logger.error("[OR-Tools] Make webhook request failed", exc_info=e)
+        raise TimeoutError("Make webhook request timed out") from e

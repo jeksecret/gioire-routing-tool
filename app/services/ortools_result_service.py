@@ -6,10 +6,6 @@ logger = logging.getLogger(__name__)
 supabase = get_supabase()
 
 def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    - Receive OR-Tools solver output
-    - Insert routing results into run.routing_results
-    """
     run_id = payload.get("run_id")
     routes = payload.get("routes")
 
@@ -18,6 +14,9 @@ def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
             "status": "error",
             "message": "Invalid OR-Tools result payload (missing run_id or routes)"
         }
+
+    # Idempotency: clear existing results
+    supabase.schema("run").from_("routing_results").delete().eq("run_id", run_id).execute()
 
     insert_rows: List[dict] = []
 
@@ -29,27 +28,22 @@ def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning("Skipping route with missing vehicle_id or stops")
             continue
 
-        # Collect TASK stops to anchor depot events
-        task_stops = [s for s in stops if s.get("event_type") == "TASK" and s.get("task_id")]
-
-        if not task_stops:
-            logger.warning(f"No TASK stops found for vehicle_id={vehicle_id}, skipping route")
-            continue
-
         for stop in stops:
             sequence = stop.get("sequence")
             event_type = stop.get("event_type")
+            task_id = stop.get("task_id")
             arrival_at = stop.get("arrival_at")
             departure_at = stop.get("departure_at")
             passengers = stop.get("passengers", 0)
-            task_id = stop.get("task_id")
 
-            if sequence is None or not event_type or not arrival_at:
+            if (
+                sequence is None
+                or not event_type
+                or not task_id
+                or arrival_at is None
+                or departure_at is None
+            ):
                 logger.warning(f"Skipping invalid stop: {stop}")
-                continue
-
-            if not task_id:
-                logger.warning(f"task_id missing for stop, skipping: {stop}")
                 continue
 
             insert_rows.append({
@@ -61,7 +55,10 @@ def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "departure_at": departure_at,
                 "passengers": passengers,
                 "event_type": event_type,
-                "meta_json": stop,
+                "meta_json": {
+                    "route_vehicle_id": vehicle_id,
+                    "stop": stop,
+                },
             })
 
     if not insert_rows:

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from app.services.ortools_request_service import build_ortools_payload
-from app.services.ortools_solver_service import solve_ortools
+from app.services.ortools_solver_service import solve_ortools, post_solver_result_to_make
 
 router = APIRouter()
 
@@ -11,4 +11,12 @@ def solve_by_run_id(run_id: int):
         return built
 
     payload = built["payload"]
-    return solve_ortools(payload, run_id=run_id)
+    result = solve_ortools(payload, run_id=run_id)
+
+    if result.get("status") == "ok":
+        try:
+            post_solver_result_to_make(result)
+        except Exception as e:
+            result["make_webhook_warning"] = str(e)
+
+    return result
