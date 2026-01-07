@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from app.services.ortools_request_service import build_ortools_payload
-from app.services.ortools_solver_service import solve_ortools, post_solver_result_to_make
+from app.services.ortools_solver_service import (solve_ortools, post_solver_result_to_make)
 
 router = APIRouter()
 

@@ -11,7 +11,7 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 logger = logging.getLogger(__name__)
 
 DEFAULT_FIXED_VEHICLE_COST = 1_000_000
-MAX_SOLVE_SECONDS = 60
+MAX_SOLVE_SECONDS = 30
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MAKE_HTTP_TIMEOUT_SECONDS", "120"))
 _MAKE_WEBHOOK_URL = os.environ.get("MAKE_OR_TOOLS_RESULT_WEBHOOK")
