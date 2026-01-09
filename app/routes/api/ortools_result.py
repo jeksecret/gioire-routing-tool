@@ -9,12 +9,17 @@ router = APIRouter()
 @router.post("/result")
 async def receive_ortools_result(request: Request):
     """
-    Receive OR-Tools solver output and persist routing results.
+    Receive OR-Tools solver output and store routing results.
     """
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as e:
+        logger.error(f"Invalid JSON received: {e}")
+        return {
+            "status": "error",
+            "message": "Invalid JSON payload"
+        }
 
     logger.info("Received OR-Tools result payload")
 
-    result = process_ortools_result(payload)
-
-    return result
+    return process_ortools_result(payload)

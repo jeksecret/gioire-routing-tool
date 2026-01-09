@@ -1,9 +1,16 @@
 import logging
 from typing import Dict, List, Any
 from app.supabase import get_supabase
+from datetime import datetime, timezone
+import copy
 
 logger = logging.getLogger(__name__)
 supabase = get_supabase()
+
+def unix_to_utc(ts: int | None):
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
 
 def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     run_id = payload.get("run_id")
@@ -51,14 +58,11 @@ def process_ortools_result(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "vehicle_id": vehicle_id,
                 "task_id": task_id,
                 "sequence": sequence,
-                "arrival_at": arrival_at,
-                "departure_at": departure_at,
+                "arrival_at": unix_to_utc(arrival_at),
+                "departure_at": unix_to_utc(departure_at),
                 "passengers": passengers,
                 "event_type": event_type,
-                "meta_json": {
-                    "route_vehicle_id": vehicle_id,
-                    "stop": stop,
-                },
+                "meta_json": copy.deepcopy(stop)
             })
 
     if not insert_rows:
