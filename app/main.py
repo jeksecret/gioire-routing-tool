@@ -8,6 +8,7 @@ from app.routes.api.scraper_router import router as scraper_router
 from app.routes.api.ortools_request import router as ortools_request_router
 from app.routes.api.ortools_solver import router as ortools_solver_router
 from app.routes.api.ortools_result import router as ortools_result_router
+from app.routes.api.shuttle_timeline import router as shuttle_timeline_router
 
 load_dotenv()
 
@@ -31,3 +32,4 @@ app.include_router(scraper_router, prefix="/api/hug")
 app.include_router(ortools_request_router, prefix="/api/ortools")
 app.include_router(ortools_solver_router, prefix="/api/ortools")
 app.include_router(ortools_result_router, prefix="/api/ortools")
+app.include_router(shuttle_timeline_router, prefix="/api/shuttle")
