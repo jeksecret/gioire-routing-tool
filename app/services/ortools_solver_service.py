@@ -184,6 +184,8 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         task_rnode_of_task_id[int(t["task_id"])] = rnode
         routing_to_phys.append(int(t["node_index"]))
 
+    task_id_of_rnode: Dict[int, int] = {rnode: task_id for task_id, rnode in task_rnode_of_task_id.items()}
+
     total_nodes = depot_count + len(tasks)
 
     # Map vehicles start/end to routing nodes
@@ -282,38 +284,14 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
 
     for v_i, v in enumerate(vehicles):
         vehicle_id = int(v["vehicle_id"])
-        index = routing.Start(v_i)
 
-        # Collect visited TASK nodes (exclude end); store task_ids in visit order
-        visit_task_ids: List[int] = []
-        temp = index
-        while not routing.IsEnd(temp):
-            nxt = solution.Value(routing.NextVar(temp))
-            if routing.IsEnd(nxt):
-                break
-
-            rnode = int(manager.IndexToNode(nxt))
-            if rnode >= depot_count:
-                # This is a task-node
-                # Recover task_id from inverse map
-                for tid, rn in task_rnode_of_task_id.items():
-                    if rn == rnode:
-                        visit_task_ids.append(int(tid))
-                        break
-
-            temp = nxt
-
-        if not visit_task_ids:
-            continue  # unused vehicle
-
-        first_task_id = int(visit_task_ids[0])
-        last_task_id = int(visit_task_ids[-1])
-
+        # Extract TASK stops directly from routing order (no visit_task_ids / task_ptr)
         stops: List[Dict[str, Any]] = []
         seq = 0
         current_passengers = 0
+        task_ids_in_route: List[int] = []
 
-        # DEPART
+        # DEPART anchor will use first TASK later
         start_rnode = int(manager.IndexToNode(routing.Start(v_i)))
         start_phys = int(routing_to_phys[start_rnode])
         t0 = int(solution.Value(time_dim.CumulVar(routing.Start(v_i))))
@@ -321,16 +299,14 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         stops.append({
             "sequence": seq,
             "event_type": "DEPART",
-            "node_index": start_phys,      # physical node_index
-            "task_id": first_task_id,      # anchored
+            "node_index": start_phys,
+            "task_id": None,  # will be set after first TASK is known
             "arrival_at": int(base_time + t0),
             "departure_at": int(base_time + t0),
             "passengers": int(current_passengers),
         })
 
-        # TASK stops
         index = routing.Start(v_i)
-        task_ptr = 0
 
         while not routing.IsEnd(index):
             nxt = solution.Value(routing.NextVar(index))
@@ -340,12 +316,11 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
 
             rnode = int(manager.IndexToNode(nxt))
             if rnode >= depot_count:
-                # TASK
                 seq += 1
                 tt = int(solution.Value(time_dim.CumulVar(nxt)))
 
-                task_id = int(visit_task_ids[task_ptr])
-                task_ptr += 1
+                task_id = int(task_id_of_rnode[int(rnode)])
+                task_ids_in_route.append(task_id)
                 task = tasks_by_id[task_id]
 
                 current_passengers += _task_delta(task["task_type"])
@@ -353,7 +328,7 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
                 stops.append({
                     "sequence": seq,
                     "event_type": "TASK",
-                    "node_index": int(task["node_index"]),  # physical node index
+                    "node_index": int(task["node_index"]),
                     "task_id": int(task_id),
                     "arrival_at": int(base_time + tt),
                     "departure_at": int(base_time + tt),
@@ -361,6 +336,14 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
                 })
 
             index = nxt
+
+        if not task_ids_in_route:
+            continue  # unused vehicle
+
+        first_task_id = int(task_ids_in_route[0])
+        last_task_id = int(task_ids_in_route[-1])
+
+        stops[0]["task_id"] = first_task_id
 
         # ARRIVE
         seq += 1
@@ -371,8 +354,8 @@ def solve_ortools(payload: Dict[str, Any], run_id: Optional[int] = None) -> Dict
         stops.append({
             "sequence": seq,
             "event_type": "ARRIVE",
-            "node_index": end_phys,        # physical node_index
-            "task_id": last_task_id,       # anchored
+            "node_index": end_phys,
+            "task_id": last_task_id,
             "arrival_at": int(base_time + te),
             "departure_at": int(base_time + te),
             "passengers": int(current_passengers),
