@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import os
 import subprocess
 
+from app.services.optimization_run import get_existing_run
+
 router = APIRouter()
 
 
@@ -44,8 +46,15 @@ def run_hug_scraper(req: HugScrapeRequest):
                 optimization_run_id = int(line.split("=", 1)[1])
                 break
 
+        # fetch run status from DB
+        run_status = None
+        if optimization_run_id is not None:
+            run = get_existing_run(req.SCRAPE_FACILITY, f"{req.SCRAPE_YEAR}-{str(req.SCRAPE_MONTH).zfill(2)}-{str(req.SCRAPE_DAY).zfill(2)}")
+            if run:
+                run_status = run["status"]
+
         return {
-            "status": "ok",
+            "status": run_status,
             "optimization_run_id": optimization_run_id,
             "stdout": stdout,
             "stderr": stderr,
