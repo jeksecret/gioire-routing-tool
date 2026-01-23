@@ -210,26 +210,21 @@ def main():
     if existing:
         run_id = existing["id"]
 
-        # 👇 CRITICAL: emit run id in the same format as new runs
+        # Required for router / Make
         print(f"__RUN_ID__={run_id}")
 
-        print("⚠ Existing run found for this facility + date.")
-        print(f"ℹ Current status: {existing['status']}")
+        # Allow retry ONLY when previous status == scrape_error
+        if existing["status"] != "scrape_error":
+            return
+        
+        set_status_scraping(run_id)
 
-        meta = existing.get("meta_json") or {}
-        row_count = meta.get("row_count", 0)
-        print(f"ℹ Previous run imported {row_count} rows.")
-
-        print("ℹ Already imported — skipping scrape.")
-        return
-
-
-    # Create new run
-    run_id = create_new_run(facility, route_date, requested_by="system")
-    print(f"__RUN_ID__={run_id}")
-    set_status_scraping(run_id)
-    print("✔ Run moved to scraping status")
-
+    else:
+        run_id = create_new_run(facility, route_date, requested_by="system")
+        print(f"__RUN_ID__={run_id}")
+        set_status_scraping(run_id)
+        print("✔ Run moved to scraping status")
+    
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
